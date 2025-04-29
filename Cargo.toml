@@ -2,6 +2,13 @@
 name = "single-statistics"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE.md"
+readme = "README.md"
+description = "A specialized Rust library for statistical analysis of single-cell data, part of the single-rust ecosystem."
+authors = ["Ian F. Diks"]
+repository = "https://github.com/SingleRust/single-statistics"
+homepage = "https://singlerust.com"
+
 
 [dependencies]
 anyhow = "1.0.98"
