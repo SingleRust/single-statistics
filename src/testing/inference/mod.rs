@@ -21,6 +21,7 @@ where
         alternative: Alternative,
     ) -> anyhow::Result<Vec<TestResult>>;
 
+
     fn mann_whitney_test(
         &self,
         group1_indices: &[usize],

@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "single-statistics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -323,9 +323,9 @@ dependencies = [
 
 [[package]]
 name = "single-utilities"
-version = "0.3.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "620a21adc30ae21279bbc0de74fcd6f4d85c8f2ace2e8bf68a4f73897cb1ee4c"
+checksum = "e4f8fbd4ea3fc4e4676a2a7dc5f4e09cdd72d3f4e10c32a8dedade130adb62ab"
 dependencies = [
  "num-traits",
 ]

@@ -1,9 +1,9 @@
-use rayon::iter::ParallelIterator;
+use crate::testing::{Alternative, TTestType, TestResult};
 use nalgebra_sparse::CsrMatrix;
+use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelIterator;
 use single_utilities::traits::FloatOpsTS;
 use statrs::distribution::{ContinuousCDF, StudentsT};
-use crate::testing::{Alternative, TTestType, TestResult};
 
 pub fn t_test_matrix_groups<T>(
     matrix: &CsrMatrix<T>,
@@ -20,28 +20,32 @@ where
         return Err(anyhow::anyhow!("Group indices cannot be empty"));
     }
 
-    let nrows = matrix.nrows();
+    let ncols = matrix.ncols();
 
-    let results: Vec<_> = (0..nrows)
+    let results: Vec<_> = (0..ncols)
         .into_par_iter()
-        .map(|row| {
+        .map(|col| {
+            // Iterate through genes (columns)
             let mut group1_values: Vec<f64> = Vec::with_capacity(group1_indices.len());
             let mut group2_values: Vec<f64> = Vec::with_capacity(group2_indices.len());
 
-            for &col in group1_indices {
+            // Get expression of this gene in group 1 cells
+            for &row in group1_indices {
                 if let Some(entry) = matrix.get_entry(row, col) {
                     let value = entry.into_value();
                     group1_values.push(value.into());
                 }
             }
 
-            for &col in group2_indices {
+            // Get expression of this gene in group 2 cells
+            for &row in group2_indices {
                 if let Some(entry) = matrix.get_entry(row, col) {
                     let value = entry.into_value();
                     group2_values.push(value.into());
                 }
             }
 
+            // Run t-test for this gene
             t_test(&group1_values, &group2_values, test_type, alternative)
         })
         .collect();

@@ -1,15 +1,15 @@
 use nalgebra_sparse::CsrMatrix;
-use num_traits::{Float, NumCast, FromPrimitive};
-use std::fmt::Debug;
+use num_traits::{Float, FromPrimitive, NumCast};
 use single_utilities::traits::FloatOpsTS;
+use std::fmt::Debug;
 
 /// Calculate log2 fold change between two groups
 pub fn calculate_log2_fold_change<T>(
     matrix: &CsrMatrix<T>,
-    row: usize,
-    group1_indices: &[usize],
-    group2_indices: &[usize],
-    pseudo_count: f64,
+    col: usize,
+    group1_indices: &[usize], // Group of interest
+    group2_indices: &[usize], // Reference group
+    pseudo_count: f64,        // Small value like 1e-9 or 1.0
 ) -> anyhow::Result<f64>
 where
     T: FloatOpsTS,
@@ -18,30 +18,30 @@ where
         return Err(anyhow::anyhow!("Group indices cannot be empty"));
     }
 
-    // Calculate mean for group 1
     let mut sum1 = 0.0;
-    for &col in group1_indices {
+    let mut count1 = 0;
+    for &row in group1_indices {
         if let Some(entry) = matrix.get_entry(row, col) {
             let value = entry.into_value();
-            sum1 += value.to_f64().unwrap();
+            sum1 += value.to_f64().unwrap_or(0.0);
+            count1 += 1;
         }
-        // Missing entries are treated as zero
     }
-    let mean1 = sum1 / group1_indices.len() as f64 + pseudo_count;
 
-    // Calculate mean for group 2
     let mut sum2 = 0.0;
-    for &col in group2_indices {
+    let mut count2 = 0;
+    for &row in group2_indices {
         if let Some(entry) = matrix.get_entry(row, col) {
             let value = entry.into_value();
-            sum2 += value.to_f64().unwrap();
+            sum2 += value.to_f64().unwrap_or(0.0);
+            count2 += 1;
         }
-        // Missing entries are treated as zero
     }
+
+    let mean1 = sum1 / group1_indices.len() as f64 + pseudo_count;
     let mean2 = sum2 / group2_indices.len() as f64 + pseudo_count;
 
-    // Calculate log2 fold change
-    let log2_fc = (mean2 / mean1).log2();
+    let log2_fc = (mean1 / mean2).log2();
 
     Ok(log2_fc)
 }
@@ -57,7 +57,9 @@ where
     T: FloatOpsTS,
 {
     if group1_indices.len() < 2 || group2_indices.len() < 2 {
-        return Err(anyhow::anyhow!("Each group must have at least 2 samples for Cohen's d"));
+        return Err(anyhow::anyhow!(
+            "Each group must have at least 2 samples for Cohen's d"
+        ));
     }
 
     // Extract values for group 1
@@ -87,13 +89,17 @@ where
     let mean2 = group2_values.iter().sum::<f64>() / group2_values.len() as f64;
 
     // Calculate variances
-    let var1 = group1_values.iter()
+    let var1 = group1_values
+        .iter()
         .map(|&x| (x - mean1).powi(2))
-        .sum::<f64>() / (group1_values.len() - 1) as f64;
+        .sum::<f64>()
+        / (group1_values.len() - 1) as f64;
 
-    let var2 = group2_values.iter()
+    let var2 = group2_values
+        .iter()
         .map(|&x| (x - mean2).powi(2))
-        .sum::<f64>() / (group2_values.len() - 1) as f64;
+        .sum::<f64>()
+        / (group2_values.len() - 1) as f64;
 
     // Calculate pooled standard deviation
     let n1 = group1_values.len() as f64;
@@ -148,35 +154,33 @@ mod tests {
         // Row 3: Extreme difference
         // Row 4: All zeros in group 1
         let rows = vec![
-            0, 0, 0, 0, 0, 0,   // Row 0: all positions filled
-            1, 1, 1, 1, 1, 1,   // Row 1: all positions filled
-            2, 2, 2, 2, 2, 2,   // Row 2: all positions filled
-            3, 3, 3, 3, 3, 3,   // Row 3: all positions filled
-            4, 4, 4             // Row 4: sparse (no entries for group 1)
+            0, 0, 0, 0, 0, 0, // Row 0: all positions filled
+            1, 1, 1, 1, 1, 1, // Row 1: all positions filled
+            2, 2, 2, 2, 2, 2, // Row 2: all positions filled
+            3, 3, 3, 3, 3, 3, // Row 3: all positions filled
+            4, 4, 4, // Row 4: sparse (no entries for group 1)
         ];
         let cols = vec![
-            0, 1, 2, 3, 4, 5,   // Row 0
-            0, 1, 2, 3, 4, 5,   // Row 1
-            0, 1, 2, 3, 4, 5,   // Row 2
-            0, 1, 2, 3, 4, 5,   // Row 3
-            3, 4, 5             // Row 4 (only group 2 values)
+            0, 1, 2, 3, 4, 5, // Row 0
+            0, 1, 2, 3, 4, 5, // Row 1
+            0, 1, 2, 3, 4, 5, // Row 2
+            0, 1, 2, 3, 4, 5, // Row 3
+            3, 4, 5, // Row 4 (only group 2 values)
         ];
         let vals = vec![
-            2.0, 2.2, 1.8, 8.0, 7.5, 8.5,    // Row 0: ~2 vs ~8 = big difference
-            5.0, 5.1, 4.9, 5.0, 5.1, 4.9,    // Row 1: ~5 vs ~5 = no difference
-            3.0, 3.3, 2.7, 5.0, 4.7, 5.3,    // Row 2: ~3 vs ~5 = moderate
+            2.0, 2.2, 1.8, 8.0, 7.5, 8.5, // Row 0: ~2 vs ~8 = big difference
+            5.0, 5.1, 4.9, 5.0, 5.1, 4.9, // Row 1: ~5 vs ~5 = no difference
+            3.0, 3.3, 2.7, 5.0, 4.7, 5.3, // Row 2: ~3 vs ~5 = moderate
             0.1, 0.2, 0.1, 20.0, 19.0, 21.0, // Row 3: ~0.1 vs ~20 = extreme
-            10.0, 8.0, 12.0                  // Row 4: 0 vs ~10 = missing data test
+            10.0, 8.0, 12.0, // Row 4: 0 vs ~10 = missing data test
         ];
 
         let coo = CooMatrix::try_from_triplets(
-            5,  // 5 rows
-            6,  // 6 columns
-            rows,
-            cols,
-            vals,
+            5, // 5 rows
+            6, // 6 columns
+            rows, cols, vals,
         )
-            .unwrap();
+        .unwrap();
 
         CsrMatrix::from(&coo)
     }
@@ -186,7 +190,7 @@ mod tests {
         let matrix = create_test_matrix();
         let group1 = vec![0, 1, 2]; // First group indices
         let group2 = vec![3, 4, 5]; // Second group indices
-        let pseudo_count = 0.01;    // Small pseudo count
+        let pseudo_count = 0.01; // Small pseudo count
 
         // Row 0: Clear difference (~2 vs ~8)
         let fc0 = calculate_log2_fold_change(&matrix, 0, &group1, &group2, pseudo_count).unwrap();
@@ -281,8 +285,10 @@ mod tests {
         // This will fail if sample sizes are out of range, but the test is to show
         // that larger sample sizes bring Hedge's g closer to Cohen's d
         if matrix.ncols() >= 16 {
-            let d_large = calculate_cohens_d(&matrix, 0, &large_group1, &large_group2).unwrap_or(d0);
-            let g_large = calculate_hedges_g(&matrix, 0, &large_group1, &large_group2).unwrap_or(g0);
+            let d_large =
+                calculate_cohens_d(&matrix, 0, &large_group1, &large_group2).unwrap_or(d0);
+            let g_large =
+                calculate_hedges_g(&matrix, 0, &large_group1, &large_group2).unwrap_or(g0);
 
             // With more samples, g should be closer to d
             assert!(g_large / d_large > g0 / d0);
@@ -295,8 +301,8 @@ mod tests {
         let rows = vec![0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1];
         let cols = vec![0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5];
         let vals = vec![
-            5.0, 5.0, 5.0, 10.0, 10.0, 10.0,  // Row 0: all values identical within groups
-            1.0, 2.0, 3.0, 5.0, 5.0, 5.0      // Row 1: variance in group 1, none in group 2
+            5.0, 5.0, 5.0, 10.0, 10.0, 10.0, // Row 0: all values identical within groups
+            1.0, 2.0, 3.0, 5.0, 5.0, 5.0, // Row 1: variance in group 1, none in group 2
         ];
 
         let coo = CooMatrix::try_from_triplets(2, 6, rows, cols, vals).unwrap();
