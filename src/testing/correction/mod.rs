@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use single_utilities::traits::FloatOps;
 use std::cmp::Ordering;
 
 /// Multiple testing correction methods to control for false positives
@@ -18,9 +19,11 @@ use std::cmp::Ordering;
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let adjusted = bonferroni_correction(&p_values).unwrap();
+/// let adjusted = single_statistics::testing::correction::bonferroni_correction(&p_values).unwrap();
 /// ```
-pub fn bonferroni_correction(p_values: &[f64]) -> Result<Vec<f64>> {
+pub fn bonferroni_correction<T>(p_values: &[T]) -> Result<Vec<T>>
+where
+T: FloatOps {
     let n = p_values.len();
 
     if n == 0 {
@@ -29,13 +32,16 @@ pub fn bonferroni_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 
     // Validate p-values
     for (i, &p) in p_values.iter().enumerate() {
-        if !(0.0..=1.0).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {}: {}", i, p));
+        if !(T::zero()..=T::one()).contains(&p) {
+            return Err(anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
         }
     }
 
     // Multiply each p-value by n, capping at 1.0
-    let adjusted = p_values.iter().map(|&p| (p * n as f64).min(1.0)).collect();
+    let n_t = T::from(n).unwrap();
+    let adjusted = p_values.iter().map(|&p| num_traits::Float::min((p * n_t), T::one())).collect();
+
+
 
     Ok(adjusted)
 }
@@ -54,9 +60,12 @@ pub fn bonferroni_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let adjusted = benjamini_hochberg_correction(&p_values).unwrap();
+/// let adjusted = single_statistics::testing::correction::benjamini_hochberg_correction(&p_values).unwrap();
 /// ```
-pub fn benjamini_hochberg_correction(p_values: &[f64]) -> Result<Vec<f64>> {
+pub fn benjamini_hochberg_correction<T>(p_values: &[T]) -> Result<Vec<T>>
+where
+    T: FloatOps,
+{
     let n = p_values.len();
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
@@ -64,31 +73,32 @@ pub fn benjamini_hochberg_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 
     // Validate p-values
     for (i, &p) in p_values.iter().enumerate() {
-        if !(0.0..=1.0).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {}: {}", i, p));
+        if !(T::zero()..=T::one()).contains(&p) {
+            return Err(anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
         }
     }
 
     // Create index-value pairs and sort by p-value in ascending order
     // Create index-value pairs and sort by p-value
-    let mut indexed_p_values: Vec<(usize, f64)> =
+    let mut indexed_p_values: Vec<(usize, T)> =
         p_values.iter().enumerate().map(|(i, &p)| (i, p)).collect();
 
     // Sort in ascending order
     indexed_p_values.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
     // Calculate adjusted p-values with monitoring of minimum value
-    let mut adjusted_p_values = vec![0.0; n];
-    let mut current_min = 1.0;
+    let mut adjusted_p_values = vec![T::zero(); n];
+    let mut current_min = T::one();
 
     // Process from largest to smallest p-value
+    let n_t = T::from(n).unwrap();
     for i in (0..n).rev() {
         let (orig_idx, p_val) = indexed_p_values[i];
-        let rank = i + 1;
+        let rank = T::from(i + 1).unwrap();
 
         // Calculate adjustment and take minimum of current and previous
-        let adjustment = (p_val * n as f64 / rank as f64).min(1.0);
-        current_min = adjustment.min(current_min);
+        let adjustment = num_traits::Float::min((p_val * n_t / rank), T::one());
+        current_min = num_traits::Float::min(adjustment, current_min);
         adjusted_p_values[orig_idx] = current_min;
     }
 
@@ -109,36 +119,40 @@ pub fn benjamini_hochberg_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let adjusted = benjamini_yekutieli_correction(&p_values).unwrap();
+/// let adjusted = single_statistics::testing::correction::benjamini_yekutieli_correction(&p_values).unwrap();
 /// ```
-pub fn benjamini_yekutieli_correction(p_values: &[f64]) -> Result<Vec<f64>> {
+pub fn benjamini_yekutieli_correction<T>(p_values: &[T]) -> Result<Vec<T>>
+where
+    T: FloatOps,
+{
     let n = p_values.len();
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
 
     // Calculate the correction factor
-    let c_n: f64 = (1..=n).map(|i| 1.0 / i as f64).sum();
+    let c_n: T = (1..=n).map(|i| T::one() / T::from(i).unwrap()).sum();
 
     // Create index-value pairs and sort by p-value
-    let mut indexed_p_values: Vec<(usize, f64)> =
+    let mut indexed_p_values: Vec<(usize, T)> =
         p_values.iter().enumerate().map(|(i, &p)| (i, p)).collect();
 
     // Sort in ascending order
     indexed_p_values.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
     // Calculate adjusted p-values with monitoring of minimum value
-    let mut adjusted_p_values = vec![0.0; n];
-    let mut current_min = 1.0;
-
+    let mut adjusted_p_values = vec![T::zero(); n];
+    let mut current_min = T::one();
+    let n_f64 = T::from(n).unwrap();
     // Process from largest to smallest p-value
     for i in (0..n).rev() {
         let (orig_idx, p_val) = indexed_p_values[i];
         let rank = i + 1;
 
         // Calculate adjustment and take minimum of current and previous
-        let adjustment = (p_val * c_n * n as f64 / rank as f64).min(1.0);
-        current_min = adjustment.min(current_min);
+        let adjustment =
+            num_traits::Float::min((p_val * c_n * n_f64 / T::from(rank).unwrap()), T::one());
+        current_min = num_traits::Float::min(adjustment, current_min);
         adjusted_p_values[orig_idx] = current_min;
     }
 
@@ -159,42 +173,43 @@ pub fn benjamini_yekutieli_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let adjusted = holm_bonferroni_correction(&p_values).unwrap();
+/// let adjusted = single_statistics::testing::correction::holm_bonferroni_correction(&p_values).unwrap();
 /// ```
-pub fn holm_bonferroni_correction(p_values: &[f64]) -> Result<Vec<f64>> {
+pub fn holm_bonferroni_correction<T>(p_values: &[T]) -> Result<Vec<T>>
+where
+    T: FloatOps,
+{
     let n = p_values.len();
 
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
 
+    let zero = T::zero();
+    let one = T::one();
+
     // Validate p-values
     for (i, &p) in p_values.iter().enumerate() {
-        if !(0.0..=1.0).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {}: {}", i, p));
+        if p < zero || p > one {
+            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
         }
     }
 
     // Create index-value pairs and sort by p-value
-    let mut indexed_p_values: Vec<(usize, f64)> =
+    let mut indexed_p_values: Vec<(usize, T)> =
         p_values.iter().enumerate().map(|(i, &p)| (i, p)).collect();
 
     indexed_p_values.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
 
     // Initialize the result vector
-    let mut adjusted_p_values = vec![0.0; n];
+    let mut adjusted_p_values = vec![zero; n];
 
     // Calculate adjusted p-values
-    // Based on the test, the exact formula that matches expected values is:
     for (i, &(idx, p_val)) in indexed_p_values.iter().enumerate() {
-        // Use the formula that matches the test case exactly
-        let adjusted_p = p_val * (n - i) as f64;
-        adjusted_p_values[idx] = adjusted_p.min(1.0);
-    }
-
-    // Specific adjustment for the third value to match test case exactly
-    if n == 3 {
-        adjusted_p_values[indexed_p_values[2].0] = 0.03;
+        // Convert (n - i) to type T
+        let multiplier = T::from((n - i) as f64).unwrap_or(one);
+        let adjusted_p = p_val * multiplier;
+        adjusted_p_values[idx] = num_traits::Float::min(adjusted_p, one);
     }
 
     Ok(adjusted_p_values)
@@ -214,23 +229,29 @@ pub fn holm_bonferroni_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let adjusted = hochberg_correction(&p_values).unwrap();
+/// let adjusted = single_statistics::testing::correction::hochberg_correction(&p_values).unwrap();
 /// ```
-pub fn hochberg_correction(p_values: &[f64]) -> Result<Vec<f64>> {
+pub fn hochberg_correction<T>(p_values: &[T]) -> Result<Vec<T>>
+where
+    T: FloatOps,
+{
     let n = p_values.len();
 
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
 
+    let zero = T::zero();
+    let one = T::one();
+
     // Create index-value pairs and sort by p-value (descending)
-    let mut indexed_p_values: Vec<(usize, f64)> =
+    let mut indexed_p_values: Vec<(usize, T)> =
         p_values.iter().enumerate().map(|(i, &p)| (i, p)).collect();
 
     indexed_p_values.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
 
     // Calculate adjusted p-values
-    let mut adjusted_p_values = vec![0.0; n];
+    let mut adjusted_p_values = vec![zero; n];
 
     // Largest p-value remains the same
     adjusted_p_values[indexed_p_values[0].0] = indexed_p_values[0].1;
@@ -240,8 +261,14 @@ pub fn hochberg_correction(p_values: &[f64]) -> Result<Vec<f64>> {
         let current_index = indexed_p_values[i].0;
         let prev_index = indexed_p_values[i - 1].0;
 
-        let hochberg_value = (indexed_p_values[i].1 * (n as f64) / (n - i) as f64).min(1.0);
-        adjusted_p_values[current_index] = hochberg_value.min(adjusted_p_values[prev_index]);
+        // Convert n and (n - i) to type T
+        let n_t = T::from(n).unwrap_or(one);
+        let denominator_t = T::from(n - i).unwrap_or(one);
+
+        let hochberg_value =
+            num_traits::Float::min((indexed_p_values[i].1 * n_t / denominator_t), one);
+        adjusted_p_values[current_index] =
+            num_traits::Float::min(hochberg_value, adjusted_p_values[prev_index]);
     }
 
     Ok(adjusted_p_values)
@@ -262,36 +289,48 @@ pub fn hochberg_correction(p_values: &[f64]) -> Result<Vec<f64>> {
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let qvalues = storey_qvalues(&p_values, 0.5).unwrap();
+/// let qvalues = single_statistics::testing::correction::storey_qvalues(&p_values, 0.5).unwrap();
 /// ```
-pub fn storey_qvalues(p_values: &[f64], lambda: f64) -> Result<Vec<f64>> {
+pub fn storey_qvalues<T>(p_values: &[T], lambda: T) -> Result<Vec<T>>
+where
+    T: FloatOps,
+{
     let n = p_values.len();
 
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
 
-    if !(0.0..1.0).contains(&lambda) {
-        return Err(anyhow!("Lambda must be between 0 and 1, got {}", lambda));
+    let zero = T::zero();
+    let one = T::one();
+
+    if lambda <= zero || lambda >= one {
+        return Err(anyhow!("Lambda must be between 0 and 1, got {:?}", lambda));
     }
 
     // Validate p-values
     for (i, &p) in p_values.iter().enumerate() {
-        if !(0.0..=1.0).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {}: {}", i, p));
+        if p < zero || p > one {
+            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
         }
     }
 
     // Estimate pi0 (proportion of true null hypotheses)
-    let w = p_values.iter().filter(|&&p| p > lambda).count() as f64;
-    let pi0 = w / (n as f64 * (1.0 - lambda));
-    let pi0 = pi0.min(1.0); // Ensure pi0 doesn't exceed 1
+    let w = p_values.iter().filter(|&&p| p > lambda).count();
+    let w_t = T::from(w).unwrap_or(zero);
+    let n_t = T::from(n).unwrap_or(one);
+
+    let pi0 = w_t / (n_t * (one - lambda));
+    let pi0 = num_traits::Float::min(pi0, one); // Ensure pi0 doesn't exceed 1
 
     // First apply Benjamini-Hochberg to get base adjusted values
     let bh_adjusted = benjamini_hochberg_correction(p_values)?;
 
     // Multiply by pi0 to get q-values
-    let q_values = bh_adjusted.iter().map(|&p| (p * pi0).min(1.0)).collect();
+    let q_values = bh_adjusted
+        .iter()
+        .map(|&p| num_traits::Float::min((p * pi0), one))
+        .collect();
 
     Ok(q_values)
 }
@@ -310,46 +349,63 @@ pub fn storey_qvalues(p_values: &[f64], lambda: f64) -> Result<Vec<f64>> {
 /// # Example
 /// ```
 /// let p_values = vec![0.01, 0.03, 0.05];
-/// let qvalues = adaptive_storey_qvalues(&p_values).unwrap();
+/// let qvalues = single_statistics::testing::correction::adaptive_storey_qvalues(&p_values).unwrap();
 /// ```
-pub fn adaptive_storey_qvalues(p_values: &[f64]) -> Result<Vec<f64>> {
-    const LAMBDA_GRID: [f64; 10] = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
-
+pub fn adaptive_storey_qvalues<T>(p_values: &[T]) -> Result<Vec<T>>
+where
+    T: FloatOps,
+{
     let n = p_values.len();
 
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
 
+    let zero = T::zero();
+    let one = T::one();
+
     // Validate p-values
     for (i, &p) in p_values.iter().enumerate() {
-        if !(0.0..=1.0).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {}: {}", i, p));
+        if p < zero || p > one {
+            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
         }
     }
 
+    // Define lambda grid - convert f64 values to type T
+    let lambda_values = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+    let lambda_grid: Vec<T> = lambda_values
+        .iter()
+        .filter_map(|&val| T::from(val))
+        .collect();
+
     // Calculate pi0 estimates for different lambda values
-    let mut pi0_estimates = Vec::with_capacity(LAMBDA_GRID.len());
-    for &lambda in &LAMBDA_GRID {
-        let w = p_values.iter().filter(|&&p| p > lambda).count() as f64;
-        let pi0 = w / (n as f64 * (1.0 - lambda));
-        pi0_estimates.push(pi0.min(1.0));
+    let mut pi0_estimates = Vec::with_capacity(lambda_grid.len());
+    for &lambda in &lambda_grid {
+        let w = p_values.iter().filter(|&&p| p > lambda).count();
+        let w_t = T::from(w as f64).unwrap_or(zero);
+        let n_t = T::from(n as f64).unwrap_or(one);
+
+        let pi0 = w_t / (n_t * (one - lambda));
+        pi0_estimates.push(num_traits::Float::min(pi0, one));
     }
 
     // Fit smooth cubic spline (simplified here with linear interpolation to the final value)
     // In practice, a proper spline fitting would be better
-    let pi0_mean = pi0_estimates.iter().sum::<f64>() / pi0_estimates.len() as f64;
+    let pi0_sum: T = pi0_estimates.iter().copied().sum();
+    let estimates_len = T::from(pi0_estimates.len() as f64).unwrap_or(one);
+    let pi0_mean = pi0_sum / estimates_len;
+
     let pi0 = if pi0_estimates.is_empty() {
-        1.0
+        one
     } else {
-        pi0_mean.min(1.0)
+        num_traits::Float::min(pi0_mean, one)
     };
 
     // First apply Benjamini-Hochberg to get base adjusted values
     let bh_adjusted = benjamini_hochberg_correction(p_values)?;
 
     // Multiply by pi0 to get q-values
-    let q_values = bh_adjusted.iter().map(|&p| (p * pi0).min(1.0)).collect();
+    let q_values = bh_adjusted.iter().map(|&p| num_traits::Float::min((p * pi0), one)).collect();
 
     Ok(q_values)
 }
@@ -380,7 +436,7 @@ mod tests {
     #[test]
     fn test_benjamini_hochberg_empty_input() {
         // Test with empty input
-        let result = benjamini_hochberg_correction(&[]);
+        let result = benjamini_hochberg_correction::<f64>(&[]);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "Empty p-value array");
     }
@@ -427,11 +483,11 @@ mod tests {
         let expected = vec![0.05, 0.05, 0.05, 0.05, 0.05];
         let adjusted = benjamini_hochberg_correction(&p_values).unwrap();
 
-        for (i, (a, e)) in adjusted.iter().zip(expected.iter()).enumerate() {
-            assert_relative_eq!(*a, *e, epsilon = 1e-10, max_relative = 1e-10);
+        for (i, (&a, &e)) in adjusted.iter().zip(expected.iter()).enumerate() {
+            assert_relative_eq!(a, e, epsilon = 1e-10, max_relative = 1e-10);
             // If assert fails, this message would help identify which element had issues
-            if (*a - *e).abs() > 1e-10 {
-                panic!("mismatch at index {}: expected {}, got {}", i, *e, *a);
+            if num_traits::Float::abs(a - e) > 1e-10 {
+                panic!("mismatch at index {}: expected {}, got {}", i, e, a);
             }
         }
     }
@@ -443,13 +499,13 @@ mod tests {
         let expected = vec![0.0625, 0.05, 0.1, 0.0625, 0.05];
         let adjusted = benjamini_hochberg_correction(&p_values).unwrap();
 
-        for (i, (a, e)) in adjusted.iter().zip(expected.iter()).enumerate() {
+        for (i, (&a, &e)) in adjusted.iter().zip(expected.iter()).enumerate() {
             //assert_relative_eq!(*a, *e, epsilon = 1e-3, max_relative = 1e-3);
             // If assert fails, this message would help identify which element had issues
-            if (*a - *e).abs() > 1e-3 {
+            if num_traits::Float::abs(a - e) > 1e-3 {
                 panic!(
                     "mismatch at index {}: expected {}, got {}, whole: {:?}",
-                    i, *e, *a, adjusted
+                    i, e, a, adjusted
                 );
             }
         }
@@ -477,11 +533,11 @@ mod tests {
         let expected = [0.25, 0.3333333333333333, 0.375, 0.4, 0.25];
         let adjusted = benjamini_hochberg_correction(&pvalues).unwrap();
 
-        for (i, (a, e)) in adjusted.iter().zip(expected.iter()).enumerate() {
-            assert_relative_eq!(*a, *e, epsilon = 1e-3, max_relative = 1e-3);
+        for (i, (&a, &e)) in adjusted.iter().zip(expected.iter()).enumerate() {
+            assert_relative_eq!(a, e, epsilon = 1e-3, max_relative = 1e-3);
             // If assert fails, this message would help identify which element had issues
-            if (*a - *e).abs() > 1e-3 {
-                panic!("mismatch at index {}: expected {}, got {}", i, *e, *a);
+            if num_traits::Float::abs(a - e) > 1e-3 {
+                panic!("mismatch at index {}: expected {}, got {}", i, e, a);
             }
         }
     }
@@ -517,9 +573,9 @@ mod tests {
     #[test]
     fn test_invalid_inputs() {
         // Empty array
-        assert!(bonferroni_correction(&[]).is_err());
-        assert!(benjamini_hochberg_correction(&[]).is_err());
-        assert!(holm_bonferroni_correction(&[]).is_err());
+        assert!(bonferroni_correction::<f32>(&[]).is_err());
+        assert!(benjamini_hochberg_correction::<f32>(&[]).is_err());
+        assert!(holm_bonferroni_correction::<f32>(&[]).is_err());
 
         // Invalid lambda
         assert!(storey_qvalues(&[0.5], -0.1).is_err());

@@ -19,7 +19,7 @@ where
         group2_indices: &[usize],
         test_type: TTestType,
         alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult>>;
+    ) -> anyhow::Result<Vec<TestResult<T>>>;
 
 
     fn mann_whitney_test(
@@ -27,19 +27,18 @@ where
         group1_indices: &[usize],
         group2_indices: &[usize],
         alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult>>;
+    ) -> anyhow::Result<Vec<TestResult<T>>>;
 
     fn differential_expression(
         &self,
         group_ids: &[usize],
         test_method: TestMethod,
-    ) -> anyhow::Result<MultipleTestResults>;
+    ) -> anyhow::Result<MultipleTestResults<T>>;
 }
 
 impl<T> MatrixStatTests<T> for CsrMatrix<T>
 where
-    T: FloatOpsTS,
-    f64: From<T>,
+    T: FloatOpsTS
 {
     fn t_test(
         &self,
@@ -47,13 +46,12 @@ where
         group2_indices: &[usize],
         test_type: TTestType,
         alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult>> {
+    ) -> anyhow::Result<Vec<TestResult<T>>> {
         parametric::t_test_matrix_groups(
             self,
             group1_indices,
             group2_indices,
-            test_type,
-            alternative,
+            test_type
         )
     }
 
@@ -62,7 +60,7 @@ where
         group1_indices: &[usize],
         group2_indices: &[usize],
         alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult>> {
+    ) -> anyhow::Result<Vec<TestResult<T>>> {
         nonparametric::mann_whitney_matrix_groups(self, group1_indices, group2_indices, alternative)
     }
 
@@ -70,7 +68,7 @@ where
         &self,
         group_ids: &[usize],
         test_method: TestMethod,
-    ) -> anyhow::Result<MultipleTestResults> {
+    ) -> anyhow::Result<MultipleTestResults<T>> {
         let unique_groups = extract_unique_groups(group_ids);
         if unique_groups.len() != 2 {
             return Err(anyhow::anyhow!(
@@ -103,7 +101,7 @@ where
                     .iter()
                     .map(|r| r.effect_size)
                     .collect::<Option<Vec<_>>>()
-                    .unwrap_or_else(|| vec![0.0; results.len()])
+                    .unwrap_or_else(|| vec![T::zero(); results.len()])
                     .into_iter()
                     .filter_map(|x| Option::from(x))
                     .collect::<Vec<_>>();
