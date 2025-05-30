@@ -1,5 +1,8 @@
+use crate::testing::utils::accumulate_gene_statistics_two_groups;
 use crate::testing::{Alternative, TTestType, TestResult};
 use nalgebra_sparse::CsrMatrix;
+use rayon::iter::ParallelIterator;
+use rayon::prelude::IntoParallelIterator;
 use single_utilities::traits::{FloatOps, FloatOpsTS};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
@@ -17,47 +20,26 @@ where
     }
 
     let n_genes = matrix.ncols();
-    let mut results = Vec::with_capacity(n_genes);
+    let group1_size = T::from(group1_indices.len()).unwrap();
+    let group2_size = T::from(group2_indices.len()).unwrap();
 
-    // Pre-allocate working vectors
-    let mut group1_values = Vec::with_capacity(group1_indices.len());
-    let mut group2_values = Vec::with_capacity(group2_indices.len());
+    let (group1_sums, group1_sum_squares, group2_sums, group2_sum_squares) =
+        accumulate_gene_statistics_two_groups(matrix, group1_indices, group2_indices)?;
 
-    for gene_idx in 0..n_genes {
-        // Clear and reuse vectors
-        group1_values.clear();
-        group2_values.clear();
-
-        // Extract values for this gene (column gene_idx)
-        // For each cell in group1, get the gene expression value
-        for &cell_idx in group1_indices {
-            let value = if let Some(entry) = matrix.get_entry(cell_idx, gene_idx) {
-                entry.into_value()
-            } else {
-                T::zero() // Handle sparse entries
-            };
-            group1_values.push(value);
-        }
-
-        // For each cell in group2, get the gene expression value
-        for &cell_idx in group2_indices {
-            let value = if let Some(entry) = matrix.get_entry(cell_idx, gene_idx) {
-                entry.into_value()
-            } else {
-                T::zero() // Handle sparse entries
-            };
-            group2_values.push(value);
-        }
-
-        // Run t-test for this gene
-        let result = t_test(
-            &group1_values,
-            &group2_values,
-            test_type,
-            Alternative::TwoSided,
-        );
-        results.push(result);
-    }
+    let results: Vec<TestResult<T>> = (0..n_genes)
+        .into_iter()
+        .map(|gene_idx| {
+            fast_t_test_from_sums(
+                group1_sums[gene_idx],
+                group1_sum_squares[gene_idx],
+                group1_size,
+                group2_sums[gene_idx],
+                group2_sum_squares[gene_idx],
+                group2_size,
+                test_type,
+            )
+        })
+        .collect();
 
     Ok(results)
 }
@@ -73,53 +55,70 @@ where
         return TestResult::new(T::zero(), T::one());
     }
 
-    // Calculate means
-    let sum_x: T = x.iter().copied().sum();
-    let sum_y: T = y.iter().copied().sum();
+    let (sum_x, sum_sq_x) = x
+        .iter()
+        .fold((T::zero(), T::zero()), |(sum, sum_sq), &val| {
+            (sum + val, sum_sq + val * val)
+        });
+
+    let (sum_y, sum_sq_y) = y
+        .iter()
+        .fold((T::zero(), T::zero()), |(sum, sum_sq), &val| {
+            (sum + val, sum_sq + val * val)
+        });
 
     let nx_f = T::from(nx).unwrap();
     let ny_f = T::from(ny).unwrap();
 
-    let mean_x = sum_x / nx_f;
-    let mean_y = sum_y / ny_f;
+    fast_t_test_from_sums(sum_x, sum_sq_x, nx_f, sum_y, sum_sq_y, ny_f, test_type)
+}
 
-    // Calculate sample variances using the correct formula
-    let var_x = x.iter()
-        .map(|&val| (val - mean_x) * (val - mean_x))
-        .sum::<T>() / (nx_f - T::one());
+fn fast_t_test_from_sums<T>(
+    sum1: T,
+    sum_sq1: T,
+    n1: T,
+    sum2: T,
+    sum_sq2: T,
+    n2: T,
+    test_type: TTestType,
+) -> TestResult<T>
+where
+    T: FloatOps,
+{
+    if n1 < T::from(2.0).unwrap() || n2 < T::from(2.0).unwrap() {
+        return TestResult::new(T::zero(), T::one());
+    }
 
-    let var_y = y.iter()
-        .map(|&val| (val - mean_y) * (val - mean_y))
-        .sum::<T>() / (ny_f - T::one());
+    let mean1 = sum1 / n1;
+    let mean2 = sum2 / n2;
 
-    // Early exit for zero variance cases
-    if var_x <= T::zero() && var_y <= T::zero() {
-        if num_traits::Float::abs(mean_x - mean_y) < <T as num_traits::Float>::epsilon() {
-            return TestResult::new(T::zero(), T::one()); // No difference, no variance
+    let var1 = (sum_sq1 - sum1 * mean1) / (n1 - T::one());
+    let var2 = (sum_sq2 - sum2 * mean2) / (n2 - T::one());
+
+    if var1 <= T::zero() && var2 <= T::zero() {
+        if num_traits::Float::abs(mean1 - mean2) < <T as num_traits::Float>::epsilon() {
+            return TestResult::new(T::zero(), T::one());
         } else {
-            return TestResult::new(<T as num_traits::Float>::infinity(), T::zero()); // Infinite t-stat, highly significant
+            return TestResult::new(<T as num_traits::Float>::infinity(), T::zero());
         }
     }
 
     let (t_stat, df) = match test_type {
         TTestType::Student => {
-            // Pooled variance (equal variances assumed)
-            let pooled_var = ((nx_f - T::one()) * var_x + (ny_f - T::one()) * var_y)
-                / (nx_f + ny_f - T::from(2.0).unwrap());
+            let pooled_var = ((n1 - T::one()) * var1 + (n2 - T::one()) * var2)
+                / (n1 + n2 - T::from(2.0).unwrap());
 
             if pooled_var <= T::zero() {
                 return TestResult::new(<T as num_traits::Float>::infinity(), T::zero());
             }
 
-            let std_err = (pooled_var * (T::one() / nx_f + T::one() / ny_f)).sqrt();
-            let t = (mean_x - mean_y) / std_err;
-            let degrees_freedom = nx_f + ny_f - T::from(2.0).unwrap();
-            (t, degrees_freedom)
+            let std_err = (pooled_var * (T::one() / n1 + T::one() / n2)).sqrt();
+            let t = (mean1 - mean2) / std_err;
+            (t, n1 + n2 - T::from(2.0).unwrap())
         }
         TTestType::Welch => {
-            // Welch's t-test (unequal variances)
-            let term1 = var_x / nx_f;
-            let term2 = var_y / ny_f;
+            let term1 = var1 / n1;
+            let term2 = var2 / n2;
             let combined_var = term1 + term2;
 
             if combined_var <= T::zero() {
@@ -127,35 +126,50 @@ where
             }
 
             let std_err = combined_var.sqrt();
-            let t = (mean_x - mean_y) / std_err;
+            let t = (mean1 - mean2) / std_err;
 
-            // Welch-Satterthwaite equation for degrees of freedom
+            // Welch-Satterthwaite equation
             let df = combined_var * combined_var
-                / (term1 * term1 / (nx_f - T::one()) + term2 * term2 / (ny_f - T::one()));
+                / (term1 * term1 / (n1 - T::one()) + term2 * term2 / (n2 - T::one()));
             (t, df)
         }
     };
 
-    // Handle edge cases
+    let p_value = fast_t_test_p_value(t_stat, df);
+
+    TestResult::new(t_stat, p_value)
+}
+
+fn fast_t_test_p_value<T>(t_stat: T, df: T) -> T
+where
+    T: FloatOps,
+{
     if !num_traits::Float::is_finite(t_stat) {
-        return TestResult::new(
-            t_stat,
-            if num_traits::Float::is_infinite(t_stat) {
-                T::zero()
-            } else {
-                T::one()
-            },
-        );
+        return if num_traits::Float::is_infinite(t_stat) {
+            T::zero()
+        } else {
+            T::one()
+        };
     }
 
     if df <= T::zero() || !num_traits::Float::is_finite(df) {
-        return TestResult::new(t_stat, T::one());
+        return T::one();
     }
 
-    // Calculate p-value using t-distribution
-    let p_value = calculate_p_value(t_stat, df, alternative);
+    if df > T::from(30.0).unwrap() {
+        let abs_t = num_traits::Float::abs(t_stat);
+        return T::from(2.0).unwrap() * normal_cdf_complement(abs_t);
+    }
 
-    TestResult::new(t_stat, num_traits::Float::clamp(p_value, T::zero(), T::one()))
+    let t_f64 = t_stat.to_f64().unwrap();
+    let df_f64 = df.to_f64().unwrap();
+
+    match StudentsT::new(0.0, 1.0, df_f64) {
+        Ok(t_dist) => {
+            T::from(2.0).unwrap() * (T::one() - T::from(t_dist.cdf(t_f64.abs())).unwrap())
+        }
+        Err(_) => T::one(),
+    }
 }
 
 fn calculate_p_value<T>(t_stat: T, df: T, alternative: Alternative) -> T
@@ -168,18 +182,9 @@ where
     match StudentsT::new(0.0, 1.0, df_f64) {
         Ok(t_dist) => {
             let p = match alternative {
-                Alternative::TwoSided => {
-                    // Two-tailed test
-                    2.0 * (1.0 - t_dist.cdf(t_f64.abs()))
-                }
-                Alternative::Less => {
-                    // Left-tailed test: P(T <= t)
-                    t_dist.cdf(t_f64)
-                }
-                Alternative::Greater => {
-                    // Right-tailed test: P(T >= t)
-                    1.0 - t_dist.cdf(t_f64)
-                }
+                Alternative::TwoSided => 2.0 * (1.0 - t_dist.cdf(t_f64.abs())),
+                Alternative::Less => t_dist.cdf(t_f64),
+                Alternative::Greater => 1.0 - t_dist.cdf(t_f64),
             };
             T::from(p).unwrap()
         }
@@ -200,7 +205,6 @@ where
     let df_f64 = df.to_f64().unwrap();
     let p_f64 = p.to_f64().unwrap();
 
-    // Create a Student's t distribution with the specified degrees of freedom
     match StudentsT::new(0.0, 1.0, df_f64) {
         Ok(dist) => T::from(dist.inverse_cdf(p_f64)).unwrap(),
         Err(_) => panic!("Failed to create StudentsT distribution"),

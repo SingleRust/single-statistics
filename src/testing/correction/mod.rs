@@ -23,7 +23,8 @@ use std::cmp::Ordering;
 /// ```
 pub fn bonferroni_correction<T>(p_values: &[T]) -> Result<Vec<T>>
 where
-T: FloatOps {
+    T: FloatOps,
+{
     let n = p_values.len();
 
     if n == 0 {
@@ -39,9 +40,10 @@ T: FloatOps {
 
     // Multiply each p-value by n, capping at 1.0
     let n_t = T::from(n).unwrap();
-    let adjusted = p_values.iter().map(|&p| num_traits::Float::min((p * n_t), T::one())).collect();
-
-
+    let adjusted = p_values
+        .iter()
+        .map(|&p| num_traits::Float::min((p * n_t), T::one()))
+        .collect();
 
     Ok(adjusted)
 }
@@ -68,41 +70,37 @@ where
 {
     let n = p_values.len();
     if n == 0 {
-        return Err(anyhow!("Empty p-value array"));
+        return Err(anyhow::anyhow!("Empty p-value array"));
     }
 
     // Validate p-values
     for (i, &p) in p_values.iter().enumerate() {
         if !(T::zero()..=T::one()).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
+            return Err(anyhow::anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
         }
     }
 
-    // Create index-value pairs and sort by p-value in ascending order
-    // Create index-value pairs and sort by p-value
-    let mut indexed_p_values: Vec<(usize, T)> =
-        p_values.iter().enumerate().map(|(i, &p)| (i, p)).collect();
+    let n_f = T::from(n).unwrap();
 
-    // Sort in ascending order
-    indexed_p_values.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_unstable_by(|&a, &b| {
+        p_values[a]
+            .partial_cmp(&p_values[b])
+            .unwrap_or(Ordering::Equal)
+    });
 
-    // Calculate adjusted p-values with monitoring of minimum value
-    let mut adjusted_p_values = vec![T::zero(); n];
-    let mut current_min = T::one();
+    let mut adjusted = vec![T::zero(); n];
+    let mut running_min = T::one();
 
-    // Process from largest to smallest p-value
-    let n_t = T::from(n).unwrap();
     for i in (0..n).rev() {
-        let (orig_idx, p_val) = indexed_p_values[i];
+        let orig_idx = indices[i];
         let rank = T::from(i + 1).unwrap();
-
-        // Calculate adjustment and take minimum of current and previous
-        let adjustment = num_traits::Float::min((p_val * n_t / rank), T::one());
-        current_min = num_traits::Float::min(adjustment, current_min);
-        adjusted_p_values[orig_idx] = current_min;
+        let adjustment = num_traits::Float::min(p_values[orig_idx] * n_f / rank, T::one());
+        running_min = num_traits::Float::min(adjustment, running_min);
+        adjusted[orig_idx] = running_min;
     }
 
-    Ok(adjusted_p_values)
+    Ok(adjusted)
 }
 
 /// Apply Benjamini-Yekutieli (BY) procedure for controlling false discovery rate under dependence
@@ -405,7 +403,10 @@ where
     let bh_adjusted = benjamini_hochberg_correction(p_values)?;
 
     // Multiply by pi0 to get q-values
-    let q_values = bh_adjusted.iter().map(|&p| num_traits::Float::min((p * pi0), one)).collect();
+    let q_values = bh_adjusted
+        .iter()
+        .map(|&p| num_traits::Float::min((p * pi0), one))
+        .collect();
 
     Ok(q_values)
 }
