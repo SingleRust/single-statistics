@@ -1,8 +1,5 @@
-use crate::testing::FloatOps;
 use nalgebra_sparse::CsrMatrix;
-use num_traits::{Float, FromPrimitive, NumCast};
-use single_utilities::traits::FloatOpsTS;
-use std::fmt::Debug;
+use single_utilities::traits::{FloatOps, FloatOpsTS};
 
 /// Calculate log2 fold change between two groups
 pub fn calculate_log2_fold_change<T>(
@@ -20,22 +17,22 @@ where
     }
 
     let mut sum1 = T::zero();
-    let mut count1 = 0;
+    let mut _count1 = 0;
     for &row in group1_indices {
         if let Some(entry) = matrix.get_entry(row, col) {
             let value = entry.into_value();
             sum1 += value;
-            count1 += 1;
+            _count1 += 1;
         }
     }
 
     let mut sum2 = T::zero();
-    let mut count2 = 0;
+    let mut _count2 = 0;
     for &row in group2_indices {
         if let Some(entry) = matrix.get_entry(row, col) {
             let value = entry.into_value();
             sum2 += value;
-            count2 += 1;
+            _count2 += 1;
         }
     }
     let go_f64 = T::from(group1_indices.len()).unwrap();
@@ -100,13 +97,13 @@ where
     // Calculate variances
     let var1 = group1_values
         .iter()
-        .map(|&x| num_traits::Float::powi((x - mean1), 2))
+        .map(|&x| num_traits::Float::powi(x - mean1, 2))
         .sum::<T>()
         / (go_t - T::one());
 
     let var2 = group2_values
         .iter()
-        .map(|&x| num_traits::Float::powi((x - mean2), 2))
+        .map(|&x| num_traits::Float::powi(x - mean2, 2))
         .sum::<T>()
         / (gt_t - T::one());
 

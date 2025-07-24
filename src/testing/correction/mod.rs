@@ -42,7 +42,7 @@ where
     let n_t = T::from(n).unwrap();
     let adjusted = p_values
         .iter()
-        .map(|&p| num_traits::Float::min((p * n_t), T::one()))
+        .map(|&p| num_traits::Float::min(p * n_t, T::one()))
         .collect();
 
     Ok(adjusted)
@@ -149,7 +149,7 @@ where
 
         // Calculate adjustment and take minimum of current and previous
         let adjustment =
-            num_traits::Float::min((p_val * c_n * n_f64 / T::from(rank).unwrap()), T::one());
+            num_traits::Float::min(p_val * c_n * n_f64 / T::from(rank).unwrap(), T::one());
         current_min = num_traits::Float::min(adjustment, current_min);
         adjusted_p_values[orig_idx] = current_min;
     }
@@ -264,7 +264,7 @@ where
         let denominator_t = T::from(n - i).unwrap_or(one);
 
         let hochberg_value =
-            num_traits::Float::min((indexed_p_values[i].1 * n_t / denominator_t), one);
+            num_traits::Float::min(indexed_p_values[i].1 * n_t / denominator_t, one);
         adjusted_p_values[current_index] =
             num_traits::Float::min(hochberg_value, adjusted_p_values[prev_index]);
     }

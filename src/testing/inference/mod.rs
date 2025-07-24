@@ -18,8 +18,7 @@ where
         group1_indices: &[usize],
         group2_indices: &[usize],
         test_type: TTestType,
-        alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult<T>>>;
+    ) -> anyhow::Result<Vec<TestResult<f64>>>;
 
 
     fn mann_whitney_test(
@@ -27,13 +26,13 @@ where
         group1_indices: &[usize],
         group2_indices: &[usize],
         alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult<T>>>;
+    ) -> anyhow::Result<Vec<TestResult<f64>>>;
 
     fn differential_expression(
         &self,
         group_ids: &[usize],
         test_method: TestMethod,
-    ) -> anyhow::Result<MultipleTestResults<T>>;
+    ) -> anyhow::Result<MultipleTestResults<f64>>;
 }
 
 impl<T> MatrixStatTests<T> for CsrMatrix<T>
@@ -45,8 +44,7 @@ where
         group1_indices: &[usize],
         group2_indices: &[usize],
         test_type: TTestType,
-        alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult<T>>> {
+    ) -> anyhow::Result<Vec<TestResult<f64>>> {
         parametric::t_test_matrix_groups(
             self,
             group1_indices,
@@ -60,7 +58,7 @@ where
         group1_indices: &[usize],
         group2_indices: &[usize],
         alternative: Alternative,
-    ) -> anyhow::Result<Vec<TestResult<T>>> {
+    ) -> anyhow::Result<Vec<TestResult<f64>>> {
         nonparametric::mann_whitney_matrix_groups(self, group1_indices, group2_indices, alternative)
     }
 
@@ -68,7 +66,7 @@ where
         &self,
         group_ids: &[usize],
         test_method: TestMethod,
-    ) -> anyhow::Result<MultipleTestResults<T>> {
+    ) -> anyhow::Result<MultipleTestResults<f64>> {
         let unique_groups = extract_unique_groups(group_ids);
         if unique_groups.len() != 2 {
             return Err(anyhow::anyhow!(
@@ -85,7 +83,6 @@ where
                     &group1_indices,
                     &group2_indices,
                     test_type,
-                    Alternative::TwoSided,
                 )?;
 
                 // Extract statistics and p-values
@@ -101,7 +98,7 @@ where
                     .iter()
                     .map(|r| r.effect_size)
                     .collect::<Option<Vec<_>>>()
-                    .unwrap_or_else(|| vec![T::zero(); results.len()])
+                    .unwrap_or_else(|| vec![0.0; results.len()])
                     .into_iter()
                     .filter_map(|x| Option::from(x))
                     .collect::<Vec<_>>();

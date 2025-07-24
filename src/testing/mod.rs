@@ -1,4 +1,4 @@
-use single_utilities::traits::{FloatOps, FloatOpsTS};
+use single_utilities::traits::FloatOps;
 use std::collections::HashMap;
 
 pub mod correction;

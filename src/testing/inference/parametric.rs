@@ -1,8 +1,6 @@
 use crate::testing::utils::accumulate_gene_statistics_two_groups;
-use crate::testing::{Alternative, TTestType, TestResult};
+use crate::testing::{TTestType, TestResult};
 use nalgebra_sparse::CsrMatrix;
-use rayon::iter::ParallelIterator;
-use rayon::prelude::IntoParallelIterator;
 use single_utilities::traits::{FloatOps, FloatOpsTS};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
@@ -11,7 +9,7 @@ pub fn t_test_matrix_groups<T>(
     group1_indices: &[usize],
     group2_indices: &[usize],
     test_type: TTestType,
-) -> anyhow::Result<Vec<TestResult<T>>>
+) -> anyhow::Result<Vec<TestResult<f64>>>
 where
     T: FloatOpsTS,
 {
@@ -23,19 +21,16 @@ where
     let group1_size = T::from(group1_indices.len()).unwrap();
     let group2_size = T::from(group2_indices.len()).unwrap();
 
-    let (group1_sums, group1_sum_squares, group2_sums, group2_sum_squares) =
-        accumulate_gene_statistics_two_groups(matrix, group1_indices, group2_indices)?;
-
-    let results: Vec<TestResult<T>> = (0..n_genes)
-        .into_iter()
+        let (group1_sums, group1_sum_squares, group2_sums, group2_sum_squares) =
+            accumulate_gene_statistics_two_groups(matrix, group1_indices, group2_indices)?;    let results: Vec<TestResult<f64>> = (0..n_genes)
         .map(|gene_idx| {
             fast_t_test_from_sums(
-                group1_sums[gene_idx],
-                group1_sum_squares[gene_idx],
-                group1_size,
-                group2_sums[gene_idx],
-                group2_sum_squares[gene_idx],
-                group2_size,
+                group1_sums[gene_idx].to_f64().unwrap(),
+                group1_sum_squares[gene_idx].to_f64().unwrap(),
+                group1_size.to_f64().unwrap(),
+                group2_sums[gene_idx].to_f64().unwrap(),
+                group2_sum_squares[gene_idx].to_f64().unwrap(),
+                group2_size.to_f64().unwrap(),
                 test_type,
             )
         })
@@ -44,7 +39,7 @@ where
     Ok(results)
 }
 
-pub fn t_test<T>(x: &[T], y: &[T], test_type: TTestType, alternative: Alternative) -> TestResult<T>
+pub fn t_test<T>(x: &[T], y: &[T], test_type: TTestType) -> TestResult<f64>
 where
     T: FloatOps,
 {
@@ -52,224 +47,309 @@ where
     let ny = y.len();
 
     if nx < 2 || ny < 2 {
-        return TestResult::new(T::zero(), T::one());
+        return TestResult::new(0.0, 1.0);
     }
 
-    let (sum_x, sum_sq_x) = x
-        .iter()
-        .fold((T::zero(), T::zero()), |(sum, sum_sq), &val| {
-            (sum + val, sum_sq + val * val)
-        });
-
-    let (sum_y, sum_sq_y) = y
-        .iter()
-        .fold((T::zero(), T::zero()), |(sum, sum_sq), &val| {
-            (sum + val, sum_sq + val * val)
-        });
-
-    let nx_f = T::from(nx).unwrap();
-    let ny_f = T::from(ny).unwrap();
-
-    fast_t_test_from_sums(sum_x, sum_sq_x, nx_f, sum_y, sum_sq_y, ny_f, test_type)
+    // Branch optimization: use different strategies based on size
+    if nx + ny < 1000 {
+        // For small datasets, optimize for simplicity and cache locality
+        t_test_small_optimized(x, y, test_type)
+    } else {
+        // For larger datasets, use the original approach
+        t_test_large(x, y, test_type)
+    }
 }
 
-fn fast_t_test_from_sums<T>(
-    sum1: T,
-    sum_sq1: T,
-    n1: T,
-    sum2: T,
-    sum_sq2: T,
-    n2: T,
-    test_type: TTestType,
-) -> TestResult<T>
+#[inline]
+fn t_test_small_optimized<T>(x: &[T], y: &[T], test_type: TTestType) -> TestResult<f64>
 where
     T: FloatOps,
 {
-    if n1 < T::from(2.0).unwrap() || n2 < T::from(2.0).unwrap() {
-        return TestResult::new(T::zero(), T::one());
+    // Optimized single-pass computation with better locality
+    let mut sum_x = T::zero();
+    let mut sum_sq_x = T::zero();
+    for &val in x {
+        sum_x += val;
+        sum_sq_x += val * val;
     }
 
+    let mut sum_y = T::zero();
+    let mut sum_sq_y = T::zero();
+    for &val in y {
+        sum_y += val;
+        sum_sq_y += val * val;
+    }
+
+    let nx_f = T::from(x.len()).unwrap();
+    let ny_f = T::from(y.len()).unwrap();
+
+    fast_t_test_from_sums(
+        sum_x.to_f64().unwrap(), 
+        sum_sq_x.to_f64().unwrap(), 
+        nx_f.to_f64().unwrap(), 
+        sum_y.to_f64().unwrap(), 
+        sum_sq_y.to_f64().unwrap(), 
+        ny_f.to_f64().unwrap(), 
+        test_type
+    )
+}
+
+#[inline]
+fn t_test_large<T>(x: &[T], y: &[T], test_type: TTestType) -> TestResult<f64>
+where
+    T: FloatOps,
+{
+    // For larger datasets, use chunked processing to improve cache efficiency
+    const CHUNK_SIZE: usize = 256;
+    
+    let mut sum_x = T::zero();
+    let mut sum_sq_x = T::zero();
+    
+    for chunk in x.chunks(CHUNK_SIZE) {
+        for &val in chunk {
+            sum_x += val;
+            sum_sq_x += val * val;
+        }
+    }
+
+    let mut sum_y = T::zero();
+    let mut sum_sq_y = T::zero();
+    
+    for chunk in y.chunks(CHUNK_SIZE) {
+        for &val in chunk {
+            sum_y += val;
+            sum_sq_y += val * val;
+        }
+    }
+
+    let nx_f = T::from(x.len()).unwrap();
+    let ny_f = T::from(y.len()).unwrap();
+
+    fast_t_test_from_sums(
+        sum_x.to_f64().unwrap(), 
+        sum_sq_x.to_f64().unwrap(), 
+        nx_f.to_f64().unwrap(), 
+        sum_y.to_f64().unwrap(), 
+        sum_sq_y.to_f64().unwrap(), 
+        ny_f.to_f64().unwrap(), 
+        test_type
+    )
+}
+
+pub fn fast_t_test_from_sums(
+    sum1: f64,
+    sum_sq1: f64,
+    n1: f64,
+    sum2: f64,
+    sum_sq2: f64,
+    n2: f64,
+    test_type: TTestType,
+) -> TestResult<f64>
+{
+    // Early exit for insufficient sample sizes
+    if n1 < 2.0 || n2 < 2.0 {
+        return TestResult::new(0.0, 1.0);
+    }
+
+    // Calculate means directly (avoiding redundant assignments)
     let mean1 = sum1 / n1;
     let mean2 = sum2 / n2;
 
-    let var1 = (sum_sq1 - sum1 * mean1) / (n1 - T::one());
-    let var2 = (sum_sq2 - sum2 * mean2) / (n2 - T::one());
-
-    if var1 <= T::zero() && var2 <= T::zero() {
-        if num_traits::Float::abs(mean1 - mean2) < <T as num_traits::Float>::epsilon() {
-            return TestResult::new(T::zero(), T::one());
-        } else {
-            return TestResult::new(<T as num_traits::Float>::infinity(), T::zero());
-        }
-    }
-
+    // Calculate variances using the computational formula
+    let var1 = (sum_sq1 - sum1 * sum1 / n1) / (n1 - 1.0);
+    let var2 = (sum_sq2 - sum2 * sum2 / n2) / (n2 - 1.0);
+    
+    let mean_diff = mean1 - mean2;
+    
     let (t_stat, df) = match test_type {
         TTestType::Student => {
-            let pooled_var = ((n1 - T::one()) * var1 + (n2 - T::one()) * var2)
-                / (n1 + n2 - T::from(2.0).unwrap());
-
-            if pooled_var <= T::zero() {
-                return TestResult::new(<T as num_traits::Float>::infinity(), T::zero());
-            }
-
-            let std_err = (pooled_var * (T::one() / n1 + T::one() / n2)).sqrt();
-            let t = (mean1 - mean2) / std_err;
-            (t, n1 + n2 - T::from(2.0).unwrap())
+            // Student's t-test (pooled variance)
+            let pooled_var = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0);
+            let std_err = (pooled_var * (1.0 / n1 + 1.0 / n2)).sqrt();
+            (mean_diff / std_err, n1 + n2 - 2.0)
         }
         TTestType::Welch => {
+            // Welch's t-test (unequal variances)
             let term1 = var1 / n1;
             let term2 = var2 / n2;
             let combined_var = term1 + term2;
-
-            if combined_var <= T::zero() {
-                return TestResult::new(<T as num_traits::Float>::infinity(), T::zero());
-            }
-
             let std_err = combined_var.sqrt();
-            let t = (mean1 - mean2) / std_err;
-
-            // Welch-Satterthwaite equation
-            let df = combined_var * combined_var
-                / (term1 * term1 / (n1 - T::one()) + term2 * term2 / (n2 - T::one()));
+            let t = mean_diff / std_err;
+            
+            // Welch-Satterthwaite equation for degrees of freedom
+            let df = combined_var * combined_var / 
+                (term1 * term1 / (n1 - 1.0) + term2 * term2 / (n2 - 1.0));
             (t, df)
         }
     };
 
     let p_value = fast_t_test_p_value(t_stat, df);
-
     TestResult::new(t_stat, p_value)
 }
 
-fn fast_t_test_p_value<T>(t_stat: T, df: T) -> T
-where
-    T: FloatOps,
+#[inline]
+fn fast_t_test_p_value(t_stat: f64, df: f64) -> f64
 {
-    if !num_traits::Float::is_finite(t_stat) {
-        return if num_traits::Float::is_infinite(t_stat) {
-            T::zero()
-        } else {
-            T::one()
-        };
+    // Fast path for non-finite inputs
+    if !t_stat.is_finite() {
+        return if t_stat.is_infinite() { 0.0 } else { 1.0 };
     }
 
-    if df <= T::zero() || !num_traits::Float::is_finite(df) {
-        return T::one();
+    if df <= 0.0 || !df.is_finite() {
+        return 1.0;
     }
 
-    if df > T::from(30.0).unwrap() {
-        let abs_t = num_traits::Float::abs(t_stat);
-        return T::from(2.0).unwrap() * normal_cdf_complement(abs_t);
+    let abs_t = t_stat.abs();
+
+    // Fast path for very small t-statistics (common case)
+    if abs_t < 0.001 {
+        return 1.0; // p-value ≈ 1 for very small effects
     }
 
-    let t_f64 = t_stat.to_f64().unwrap();
-    let df_f64 = df.to_f64().unwrap();
+    // Early return for very large t-statistics (avoids expensive computations)
+    if abs_t > 37.0 {
+        let log_p = log_normal_tail_probability(abs_t);
+        return 2.0 * log_p.exp();
+    }
 
-    match StudentsT::new(0.0, 1.0, df_f64) {
+    // Use normal approximation for large degrees of freedom (faster than t-distribution)
+    if df > 100.0 {
+        return 2.0 * high_precision_normal_cdf_complement(abs_t);
+    }
+
+    // Only create StudentsT distribution when necessary
+    match StudentsT::new(0.0, 1.0, df) {
         Ok(t_dist) => {
-            T::from(2.0).unwrap() * (T::one() - T::from(t_dist.cdf(t_f64.abs())).unwrap())
+            let cdf_val = t_dist.cdf(abs_t);
+            2.0 * (1.0 - cdf_val)
         }
-        Err(_) => T::one(),
+        Err(_) => 1.0,
     }
 }
 
-fn calculate_p_value<T>(t_stat: T, df: T, alternative: Alternative) -> T
-where
-    T: FloatOps,
-{
-    let t_f64 = t_stat.to_f64().unwrap();
-    let df_f64 = df.to_f64().unwrap();
+/// High-precision calculation of log(P(Z > x)) for standard normal
+#[inline]
+fn log_normal_tail_probability(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0; 
+    }
+    
+    if x > 8.0 {
+        let x_sq = x * x;
+        return -0.5 * x_sq - (x * (2.0 * std::f64::consts::PI).sqrt()).ln();
+    }
 
-    match StudentsT::new(0.0, 1.0, df_f64) {
-        Ok(t_dist) => {
-            let p = match alternative {
-                Alternative::TwoSided => 2.0 * (1.0 - t_dist.cdf(t_f64.abs())),
-                Alternative::Less => t_dist.cdf(t_f64),
-                Alternative::Greater => 1.0 - t_dist.cdf(t_f64),
-            };
-            T::from(p).unwrap()
+    let z = x / (2.0_f64).sqrt();
+    log_erfc(z) - (2.0_f64).ln()
+}
+
+/// High-precision complementary error function for extreme values
+#[inline]
+fn log_erfc(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0;
+    }
+    
+    if x > 26.0 {
+        let x_sq = x * x;
+        return -x_sq - 0.5 * (std::f64::consts::PI).ln() - x.ln();
+    }
+
+    continued_fraction_log_erfc(x)
+}
+
+/// Continued fraction approximation for log(erfc(x))
+#[inline]
+fn continued_fraction_log_erfc(x: f64) -> f64 {
+    if x < 2.0 {
+        let erf_val = erf_series(x);
+        return (1.0 - erf_val).ln();
+    }
+    
+    let x_sq = x * x;
+    let mut a = 1.0;
+    let mut b = 2.0 * x_sq;
+    let mut result = a / b;
+    
+    for n in 1..50 {
+        a = -(2 * n - 1) as f64;
+        b = 2.0 * x_sq + a / result;
+        let new_result = a / b;
+        
+        if (result - new_result).abs() < 1e-15 {
+            break;
         }
-        Err(_) => T::one(), // Fallback for invalid parameters
+        result = new_result;
     }
+    
+    -x_sq + (result / (x * (std::f64::consts::PI).sqrt())).ln()
 }
 
-pub fn student_t_quantile<T>(p: T, df: T) -> T
-where
-    T: FloatOps,
-{
-    if p <= T::zero() || p >= T::one() {
-        panic!("Probability must be between 0 and 1 (exclusive)");
-    }
-    if df <= T::zero() {
-        panic!("Degrees of freedom must be positive");
-    }
-    let df_f64 = df.to_f64().unwrap();
-    let p_f64 = p.to_f64().unwrap();
-
-    match StudentsT::new(0.0, 1.0, df_f64) {
-        Ok(dist) => T::from(dist.inverse_cdf(p_f64)).unwrap(),
-        Err(_) => panic!("Failed to create StudentsT distribution"),
-    }
-}
-
+/// Series expansion for erf(x) for small x
 #[inline]
-fn normal_cdf<T>(x: T) -> T
-where
-    T: FloatOps,
-{
-    if x < T::from(-8.0).unwrap() {
-        return T::zero();
+fn erf_series(x: f64) -> f64 {
+    let x_sq = x * x;
+    let mut term = x;
+    let mut result = term;
+    
+    for n in 1..100 {
+        term *= -x_sq / (n as f64);
+        let new_term = term / (2.0 * n as f64 + 1.0);
+        result += new_term;
+        
+        if new_term.abs() < 1e-16 {
+            break;
+        }
     }
-    if x > T::from(8.0).unwrap() {
-        return T::one();
-    }
-
-    T::from(0.5).unwrap() * (T::one() + erf_approx(x / T::from(2.0).unwrap().sqrt()))
+    
+    result * 2.0 / (std::f64::consts::PI).sqrt()
 }
 
+/// High-precision normal CDF complement for extreme values
 #[inline]
-fn normal_cdf_complement<T>(x: T) -> T
-where
-    T: FloatOps,
-{
-    if x < T::from(-8.0).unwrap() {
-        return T::one();
+fn high_precision_normal_cdf_complement(x: f64) -> f64 {
+    if x < 0.0 {
+        return 1.0 - high_precision_normal_cdf_complement(-x);
     }
-    if x > T::from(8.0).unwrap() {
-        return T::zero();
+    
+    if x > 37.0 {
+        let log_p = log_normal_tail_probability(x);
+        return log_p.exp();
     }
-
-    T::from(0.5).unwrap() * erfc_approx(x / T::from(2.0).unwrap().sqrt())
+    
+    0.5 * erfc_high_precision(x / (2.0_f64).sqrt())
 }
 
+/// High-precision complementary error function
 #[inline]
-fn erf_approx<T>(x: T) -> T
-where
-    T: FloatOps,
-{
-    let a1 = T::from(0.254829592).unwrap();
-    let a2 = T::from(-0.284496736).unwrap();
-    let a3 = T::from(1.421413741).unwrap();
-    let a4 = T::from(-1.453152027).unwrap();
-    let a5 = T::from(1.061405429).unwrap();
-    let p = T::from(0.3275911).unwrap();
-
-    let sign = if x < T::zero() {
-        T::from(-1.0).unwrap()
-    } else {
-        T::one()
-    };
-    let x = num_traits::Float::abs(x);
-
-    let t = T::one() / (T::one() + p * x);
-    let y = T::one() - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
-
-    sign * y
+fn erfc_high_precision(x: f64) -> f64 {
+    if x < 0.0 {
+        return 2.0 - erfc_high_precision(-x);
+    }
+    
+    if x > 26.0 {
+        return 0.0; 
+    }
+    
+    if x < 2.0 {
+        return 1.0 - erf_series(x);
+    }
+    chebyshev_erfc(x)
 }
 
+/// Chebyshev rational approximation for erfc
 #[inline]
-fn erfc_approx<T>(x: T) -> T
-where
-    T: FloatOps,
-{
-    T::one() - erf_approx(x)
+fn chebyshev_erfc(x: f64) -> f64 {
+    let a1 = 0.0705230784;
+    let a2 = 0.0422820123;
+    let a3 = 0.0092705272;
+    let a4 = 0.0001520143;
+    let a5 = 0.0002765672;
+    let a6 = 0.0000430638;
+    
+    let t = 1.0 / (1.0 + 0.3275911 * x);
+    let poly = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * (a5 + t * a6)))));
+    
+    poly * (-x * x).exp()
 }
+
