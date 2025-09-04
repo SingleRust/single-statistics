@@ -79,7 +79,7 @@ where
             return Err(anyhow::anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
         }
     }
-
+    
     let n_f = T::from(n).unwrap();
 
     let mut indices: Vec<usize> = (0..n).collect();
