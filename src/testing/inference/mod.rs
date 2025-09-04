@@ -1,7 +1,9 @@
+use crate::testing::utils::{extract_unique_groups, get_group_indices};
+use crate::testing::{
+    Alternative, MultipleTestResults, TTestType, TestMethod, TestResult, correction,
+};
 use nalgebra_sparse::CsrMatrix;
 use single_utilities::traits::FloatOpsTS;
-use crate::testing::{correction, Alternative, MultipleTestResults, TTestType, TestMethod, TestResult};
-use crate::testing::utils::{extract_unique_groups, get_group_indices};
 
 pub mod discrete;
 
@@ -20,7 +22,6 @@ where
         test_type: TTestType,
     ) -> anyhow::Result<Vec<TestResult<f64>>>;
 
-
     fn mann_whitney_test(
         &self,
         group1_indices: &[usize],
@@ -37,7 +38,8 @@ where
 
 impl<T> MatrixStatTests<T> for CsrMatrix<T>
 where
-    T: FloatOpsTS
+    T: FloatOpsTS,
+    f64: std::convert::From<T>,
 {
     fn t_test(
         &self,
@@ -45,12 +47,7 @@ where
         group2_indices: &[usize],
         test_type: TTestType,
     ) -> anyhow::Result<Vec<TestResult<f64>>> {
-        parametric::t_test_matrix_groups(
-            self,
-            group1_indices,
-            group2_indices,
-            test_type
-        )
+        parametric::t_test_matrix_groups(self, group1_indices, group2_indices, test_type)
     }
 
     fn mann_whitney_test(
@@ -79,19 +76,14 @@ where
         match test_method {
             TestMethod::TTest(test_type) => {
                 // Run t-tests
-                let results = self.t_test(
-                    &group1_indices,
-                    &group2_indices,
-                    test_type,
-                )?;
+                let results = self.t_test(&group1_indices, &group2_indices, test_type)?;
 
                 // Extract statistics and p-values
                 let statistics: Vec<_> = results.iter().map(|r| r.statistic).collect();
                 let p_values: Vec<_> = results.iter().map(|r| r.p_value).collect();
 
                 // Apply multiple testing correction
-                let adjusted_p_values =
-                    correction::benjamini_hochberg_correction(&p_values)?;
+                let adjusted_p_values = correction::benjamini_hochberg_correction(&p_values)?;
 
                 // Extract effect sizes if available
                 let effect_sizes = results
@@ -127,8 +119,7 @@ where
                 let p_values: Vec<_> = results.iter().map(|r| r.p_value).collect();
 
                 // Apply multiple testing correction
-                let adjusted_p_values =
-                    correction::benjamini_hochberg_correction(&p_values)?;
+                let adjusted_p_values = correction::benjamini_hochberg_correction(&p_values)?;
 
                 Ok(MultipleTestResults::new(statistics, p_values)
                     .with_adjusted_p_values(adjusted_p_values)
