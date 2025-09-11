@@ -1,3 +1,12 @@
+//! Non-parametric statistical tests for single-cell data analysis.
+//!
+//! This module implements non-parametric statistical tests that make fewer assumptions about
+//! data distribution. These tests are particularly useful for single-cell data which often
+//! exhibits non-normal distributions, high sparsity, and outliers.
+//!
+//! The primary test implemented is the Mann-Whitney U test (also known as the Wilcoxon 
+//! rank-sum test), which compares the distributions of two groups without assuming normality.
+
 use std::{cmp::Ordering, f64};
 
 use nalgebra_sparse::CsrMatrix;
@@ -13,6 +22,34 @@ struct TieInfo {
     tie_correction: f64,
 }
 
+/// Perform Mann-Whitney U tests on all genes comparing two groups of cells.
+///
+/// This function efficiently computes Mann-Whitney U statistics for all genes in a sparse
+/// matrix, comparing expression distributions between two groups of cells. The implementation
+/// uses parallel processing for improved performance on large datasets.
+///
+/// # Arguments
+///
+/// * `matrix` - Sparse expression matrix (genes × cells)
+/// * `group1_indices` - Column indices for the first group of cells
+/// * `group2_indices` - Column indices for the second group of cells
+/// * `alternative` - Type of alternative hypothesis (two-sided, less, greater)
+///
+/// # Returns
+///
+/// Vector of `TestResult` objects containing U statistics and p-values for each gene.
+/// let group1 = vec![0, 1, 2]; // First group of cells
+/// let group2 = vec![3, 4, 5]; // Second group of cells
+///
+/// let results = mann_whitney_matrix_groups(
+///     &matrix, 
+///     &group1, 
+///     &group2, 
+///     Alternative::TwoSided
+/// )?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn mann_whitney_matrix_groups<T>(
     matrix: &CsrMatrix<T>,
     group1_indices: &[usize],
@@ -48,6 +85,34 @@ where
     Ok(results)
 }
 
+/// Perform an optimized Mann-Whitney U test on two samples.
+///
+/// This function computes the Mann-Whitney U statistic and p-value for comparing two
+/// independent samples. It handles ties correctly and supports different alternative
+/// hypotheses.
+///
+/// # Arguments
+///
+/// * `x` - First sample
+/// * `y` - Second sample
+/// * `alternative` - Type of alternative hypothesis
+///
+/// # Returns
+///
+/// `TestResult` containing the U statistic and p-value.
+///
+/// # Example
+///
+/// ```rust
+/// use single_statistics::testing::inference::nonparametric::mann_whitney_optimized;
+/// use single_statistics::testing::Alternative;
+///
+/// let group1 = vec![1.0, 2.0, 3.0];
+/// let group2 = vec![4.0, 5.0, 6.0];
+/// let result = mann_whitney_optimized(&group1, &group2, Alternative::TwoSided);
+/// 
+/// println!("U statistic: {}, p-value: {}", result.statistic, result.p_value);
+/// ```
 pub fn mann_whitney_optimized(x: &[f64], y: &[f64], alternative: Alternative) -> TestResult<f64> {
     let nx = x.len();
     let ny = y.len();

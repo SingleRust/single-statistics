@@ -1,9 +1,27 @@
+//! Multiple testing correction methods for controlling false positives in differential expression analysis.
+//!
+//! When testing thousands of genes simultaneously (as is common in single-cell RNA-seq analysis),
+//! the probability of false positives increases dramatically. These correction methods help control
+//! either the Family-Wise Error Rate (FWER) or False Discovery Rate (FDR).
+//!
+//! ## Available Methods
+//!
+//! - **Bonferroni**: Conservative FWER control, multiplies p-values by number of tests
+//! - **Benjamini-Hochberg**: FDR control, less conservative than Bonferroni
+//! - **Benjamini-Yekutieli**: FDR control for dependent tests
+//! - **Holm-Bonferroni**: Step-down FWER control, less conservative than Bonferroni
+//! - **Storey's q-value**: Improved FDR estimation
+//!
+//! ## Choosing a Method
+//!
+//! - **For single-cell DE analysis**: Use Benjamini-Hochberg (most common)
+//! - **For very strict control**: Use Bonferroni or Holm-Bonferroni
+//! - **For dependent tests**: Use Benjamini-Yekutieli
+//! - **For large datasets**: Consider Storey's q-value
+
 use anyhow::{Result, anyhow};
 use single_utilities::traits::FloatOps;
 use std::cmp::Ordering;
-
-/// Multiple testing correction methods to control for false positives
-/// when performing many statistical tests simultaneously.
 
 /// Apply Bonferroni correction to p-values
 ///

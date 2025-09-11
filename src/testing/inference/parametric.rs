@@ -1,9 +1,30 @@
+//! Parametric statistical tests for single-cell data analysis.
+//!
+//! This module implements parametric statistical tests, primarily t-tests, optimized for
+//! sparse single-cell expression matrices. The implementations are designed for efficiency
+//! when testing thousands of genes across different cell groups.
+
 use crate::testing::utils::accumulate_gene_statistics_two_groups;
 use crate::testing::{TTestType, TestResult};
 use nalgebra_sparse::CsrMatrix;
 use single_utilities::traits::{FloatOps, FloatOpsTS};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
+/// Perform t-tests on all genes comparing two groups of cells.
+///
+/// This is an optimized implementation that efficiently computes summary statistics
+/// for sparse matrices and performs t-tests for each gene.
+///
+/// # Arguments
+///
+/// * `matrix` - Sparse expression matrix (genes × cells)
+/// * `group1_indices` - Column indices for the first group of cells
+/// * `group2_indices` - Column indices for the second group of cells
+/// * `test_type` - Type of t-test to perform (Student's or Welch's)
+///
+/// # Returns
+///
+/// Vector of `TestResult` objects, one per gene, containing t-statistics and p-values.
 pub fn t_test_matrix_groups<T>(
     matrix: &CsrMatrix<T>,
     group1_indices: &[usize],
@@ -39,6 +60,20 @@ where
     Ok(results)
 }
 
+/// Perform a t-test comparing two samples.
+///
+/// This function performs either Student's t-test (assuming equal variances) or
+/// Welch's t-test (allowing unequal variances) on two samples.
+///
+/// # Arguments
+///
+/// * `x` - First sample
+/// * `y` - Second sample  
+/// * `test_type` - Type of t-test to perform
+///
+/// # Returns
+///
+/// `TestResult` containing the t-statistic and p-value.
 pub fn t_test<T>(x: &[T], y: &[T], test_type: TTestType) -> TestResult<f64>
 where
     T: FloatOps,
@@ -136,6 +171,22 @@ where
     )
 }
 
+/// Perform a t-test using precomputed summary statistics.
+///
+/// This is an optimized function that computes t-tests directly from sum and sum-of-squares,
+/// avoiding the need to store or iterate through the original data. Particularly useful for
+/// sparse matrix operations where computing these statistics is done efficiently during
+/// matrix traversal.
+///
+/// # Arguments
+///
+/// * `sum1`, `sum_sq1`, `n1` - Sum, sum of squares, and count for group 1
+/// * `sum2`, `sum_sq2`, `n2` - Sum, sum of squares, and count for group 2
+/// * `test_type` - Type of t-test to perform (Student's or Welch's)
+///
+/// # Returns
+///
+/// `TestResult` containing the t-statistic and p-value.
 pub fn fast_t_test_from_sums(
     sum1: f64,
     sum_sq1: f64,

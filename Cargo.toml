@@ -1,6 +1,6 @@
 [package]
 name = "single-statistics"
-version = "0.8.0-beta"
+version = "0.8.1"
 edition = "2024"
 license-file = "LICENSE.md"
 readme = "README.md"

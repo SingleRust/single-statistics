@@ -1,3 +1,27 @@
+//! Statistical testing framework for single-cell data analysis.
+//!
+//! This module provides a comprehensive suite of statistical tests and methods specifically designed
+//! for single-cell RNA-seq data analysis. It includes parametric and non-parametric tests, multiple
+//! testing correction methods, and effect size calculations.
+//!
+//! ## Key Components
+//!
+//! - **Core Data Structures**: [`TestResult`] and [`MultipleTestResults`] for storing test outcomes
+//! - **Test Methods**: [`TestMethod`] enum defining available statistical tests
+//! - **Matrix Operations**: [`MatrixStatTests`] trait for running tests on sparse matrices
+//!
+//! ## Submodules
+//!
+//! - [`correction`]: Multiple testing correction methods (FDR, Bonferroni, etc.)
+//! - [`effect`]: Effect size calculations (Cohen's d, etc.)
+//! - [`inference`]: Core statistical inference implementations
+//! - [`utils`]: Utility functions for data preparation and validation
+//!
+//! ## Usage
+//!
+//! Use the `MatrixStatTests` trait on sparse matrices to perform differential expression
+//! analysis with various statistical methods and automatic multiple testing correction.
+
 use single_utilities::traits::FloatOps;
 use std::collections::HashMap;
 
@@ -7,26 +31,77 @@ pub mod inference;
 
 pub mod utils;
 
+/// Statistical test methods available for differential expression analysis.
+///
+/// This enum defines the different statistical tests that can be applied to single-cell data.
+/// Each method has specific assumptions and use cases.
 #[derive(Debug, Clone, Copy)]
 pub enum TestMethod {
+    /// Student's or Welch's t-test for comparing means between two groups.
+    /// 
+    /// **Use when**: Data is approximately normal, comparing continuous expression values.
+    /// **Best for**: Most differential expression analyses in single-cell data.
     TTest(TTestType),
+    
+    /// Mann-Whitney U test (Wilcoxon rank-sum test) for non-parametric comparison.
+    /// 
+    /// **Use when**: Data is not normally distributed, or you want a robust rank-based test.
+    /// **Best for**: Highly skewed expression data or small sample sizes.
     MannWhitney,
+    
+    /// Negative binomial test for count data with overdispersion.
+    /// 
+    /// **Use when**: Working with raw UMI counts and modeling overdispersion.
+    /// **Best for**: Count-based differential expression (like DESeq2/edgeR approach).
     NegativeBinomial,
+    
+    /// Zero-inflated models for data with excess zeros.
+    /// 
+    /// **Use when**: High proportion of zero values (dropout) needs explicit modeling.
+    /// **Best for**: Single-cell data with significant technical dropout.
     ZeroInflated,
 }
 
+/// Type of t-test to perform, differing in variance assumptions.
 #[derive(Debug, Clone, Copy)]
 pub enum TTestType {
-    Student, // Equal variance
-    Welch,   // Unequal variance
+    /// Student's t-test assuming equal variances between groups.
+    /// 
+    /// **Use when**: Groups have similar variance (homoscedasticity).
+    /// **Faster** but less robust than Welch's t-test.
+    Student,
+    
+    /// Welch's t-test allowing unequal variances between groups.
+    /// 
+    /// **Use when**: Groups may have different variances (heteroscedasticity).
+    /// **Recommended** for most single-cell analyses as the default choice.
+    Welch,
 }
 
+/// Alternative hypothesis for statistical tests.
 #[derive(Debug, Clone, Copy)]
 pub enum Alternative {
+    /// Two-sided test: group means are not equal (μ₁ ≠ μ₂).
+    /// 
+    /// **Most common** choice for differential expression analysis.
     TwoSided,
+    
+    /// One-sided test: group 1 mean is less than group 2 (μ₁ < μ₂).
+    /// 
+    /// **Use when**: You specifically want to test for downregulation.
     Less,
+    
+    /// One-sided test: group 1 mean is greater than group 2 (μ₁ > μ₂).
+    /// 
+    /// **Use when**: You specifically want to test for upregulation.
     Greater,
 }
+
+/// Result of a single statistical test.
+///
+/// Contains the test statistic, p-value, and optional additional information like effect sizes
+/// and confidence intervals. This structure is used for individual gene/feature tests.
+///
 
 #[derive(Debug, Clone)]
 pub struct TestResult<T> {
@@ -36,9 +111,9 @@ pub struct TestResult<T> {
     pub p_value: T,
     /// Confidence interval for the effect size/difference (if available)
     pub confidence_interval: Option<(T, T)>,
-    /// Degrees of freedom (for parametric inference)
+    /// Degrees of freedom (for parametric tests)
     pub degrees_of_freedom: Option<T>,
-    /// Effect size measurement
+    /// Effect size measurement (Cohen's d, etc.)
     pub effect_size: Option<T>,
     /// Standard error of the effect size or test statistic
     pub standard_error: Option<T>,
@@ -105,6 +180,13 @@ where
         self.p_value < alpha
     }
 }
+
+/// Results from multiple statistical tests, typically for differential expression analysis.
+///
+/// This structure contains results from testing multiple features (genes) simultaneously,
+/// including multiple testing correction. It's the primary output of differential expression
+/// analysis workflows.
+///
 
 #[derive(Debug, Clone)]
 pub struct MultipleTestResults<T> {

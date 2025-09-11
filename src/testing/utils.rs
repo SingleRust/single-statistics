@@ -1,6 +1,11 @@
+//! Utility functions for statistical testing operations.
+
 use nalgebra_sparse::CsrMatrix;
 use single_utilities::traits::FloatOpsTS;
 
+/// Extract unique group identifiers from a group assignment vector.
+///
+/// Returns a sorted vector of unique group IDs, removing duplicates.
 pub fn extract_unique_groups(group_ids: &[usize]) -> Vec<usize> {
     let mut unique_groups = group_ids.to_vec();
     unique_groups.sort();
@@ -8,7 +13,10 @@ pub fn extract_unique_groups(group_ids: &[usize]) -> Vec<usize> {
     unique_groups
 }
 
-/// Get indices for each group
+/// Extract indices of cells belonging to each of the two groups.
+///
+/// Returns a tuple of (group1_indices, group2_indices) where each vector contains
+/// the row/column indices of cells belonging to that group.
 pub fn get_group_indices(group_ids: &[usize], unique_groups: &[usize]) -> (Vec<usize>, Vec<usize>) {
     let group1 = unique_groups[0];
     let group2 = unique_groups[1];
@@ -26,6 +34,14 @@ pub fn get_group_indices(group_ids: &[usize], unique_groups: &[usize]) -> (Vec<u
     (group1_indices, group2_indices)
 }
 
+/// Efficiently compute summary statistics for all genes across two groups of cells.
+///
+/// This function traverses the sparse matrix once and computes sum and sum-of-squares
+/// for each gene within each group, optimized for sparse matrix structures.
+///
+/// # Returns
+///
+/// Tuple of (group1_sums, group1_sum_squares, group2_sums, group2_sum_squares).
 pub(crate) fn accumulate_gene_statistics_two_groups<T>(
     matrix: &CsrMatrix<T>,
     group1_indices: &[usize],
