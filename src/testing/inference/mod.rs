@@ -11,10 +11,40 @@ pub mod parametric;
 
 pub mod nonparametric;
 
+/// Statistical testing methods for sparse matrices, particularly suited for single-cell data.
+///
+/// This trait extends sparse matrix types (like `CsrMatrix`) with statistical testing capabilities.
+/// It provides methods for differential expression analysis and other statistical comparisons
+/// optimized for single-cell RNA-seq data.
+///
+/// # Matrix Format
+///
+/// The expected matrix format is **genes × cells** (features × observations), where:
+/// - Rows represent genes/features
+/// - Columns represent cells/observations
+/// - Values represent expression levels (normalized counts, log-transformed, etc.)
+///
+
 pub trait MatrixStatTests<T>
 where
     T: FloatOpsTS,
 {
+    /// Perform t-tests comparing two groups of cells for all genes.
+    ///
+    /// Runs Student's or Welch's t-test for each gene (row) in the matrix, comparing
+    /// expression levels between the specified groups of cells (columns).
+    ///
+    /// # Arguments
+    ///
+    /// * `group1_indices` - Column indices for the first group of cells
+    /// * `group2_indices` - Column indices for the second group of cells  
+    /// * `test_type` - Type of t-test (`Student` or `Welch`)
+    ///
+    /// # Returns
+    ///
+    /// Vector of `TestResult` objects, one per gene, containing test statistics and p-values.
+    ///
+
     fn t_test(
         &self,
         group1_indices: &[usize],
@@ -22,12 +52,43 @@ where
         test_type: TTestType,
     ) -> anyhow::Result<Vec<TestResult<f64>>>;
 
+    /// Perform Mann-Whitney U tests comparing two groups of cells for all genes.
+    ///
+    /// Runs non-parametric Mann-Whitney U (Wilcoxon rank-sum) tests for each gene,
+    /// comparing the distributions between the specified groups.
+    ///
+    /// # Arguments
+    ///
+    /// * `group1_indices` - Column indices for the first group of cells
+    /// * `group2_indices` - Column indices for the second group of cells
+    /// * `alternative` - Type of alternative hypothesis (two-sided, less, greater)
+    ///
+    /// # Returns
+    ///
+    /// Vector of `TestResult` objects containing U statistics and p-values.
     fn mann_whitney_test(
         &self,
         group1_indices: &[usize],
         group2_indices: &[usize],
         alternative: Alternative,
     ) -> anyhow::Result<Vec<TestResult<f64>>>;
+
+    /// Comprehensive differential expression analysis with multiple testing correction.
+    ///
+    /// This is the main method for differential expression analysis. It performs the
+    /// specified statistical test on all genes and applies multiple testing correction
+    /// to control the false discovery rate.
+    ///
+    /// # Arguments
+    ///
+    /// * `group_ids` - Vector assigning each cell to a group (currently supports 2 groups)
+    /// * `test_method` - Statistical test to perform
+    ///
+    /// # Returns
+    ///
+    /// `MultipleTestResults` containing statistics, p-values, adjusted p-values, and
+    /// metadata for all genes.
+    ///
 
     fn differential_expression(
         &self,

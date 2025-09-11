@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "single-statistics"
-version = "0.7.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "approx",
