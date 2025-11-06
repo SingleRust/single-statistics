@@ -25,4 +25,5 @@
 //! - **[`enrichment`]**: Gene set enrichment analysis methods (GSEA, ORA, AUCell)
 
 pub mod testing;
+#[cfg(feature = "enrichment")]
 pub mod enrichment;

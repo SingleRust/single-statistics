@@ -1,72 +1,15 @@
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashMap;
 
 use anyhow::anyhow;
 use indicatif::ParallelProgressIterator;
 use nalgebra_sparse::csc::CscCol;
 use nalgebra_sparse::{CscMatrix, CsrMatrix, csr::CsrRow};
 use ndarray::Array2;
-use num_traits::Float;
-use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use single_utilities::traits::FloatOpsTS;
-
-use crate::enrichment::utils::getset;
+use single_utilities::types::PathwayNetwork;
 
 // Following the general implementation presented here, But adapted to nalgebra_sparse and multithreading: https://github.com/scverse/decoupler/blob/main/src/decoupler/mt/_aucell.py
-fn validate_net(
-    source: Vec<String>,
-    target: Vec<String>,
-    weights: Option<Vec<f32>>,
-    verbose: bool,
-) -> anyhow::Result<HashMap<String, Vec<(String, f32)>>> {
-    let len_source = source.len();
-    let len_target = target.len();
-    if (len_source != len_target) {
-        return Err(anyhow!(
-            "Source and target must have the same length in order to be used for network construction!"
-        ));
-    }
-
-    let mut map: HashMap<String, Vec<(String, f32)>> = HashMap::new();
-    let mut current_src: String = "".to_string();
-    let mut current_target_weight: HashMap<String, f32> = HashMap::new();
-    for (i, src) in source.iter().enumerate() {
-        if current_src.is_empty() {
-            // never set a value in there
-            current_src = src.clone();
-        }
-
-        if current_src != *src {
-            // incase this is a different node now
-            if !current_target_weight.is_empty() {
-                let data: Vec<(String, f32)> = current_target_weight
-                    .iter()
-                    .map(|(key, value)| (key.clone(), *value))
-                    .collect();
-                map.insert(current_src, data);
-                // cleanup
-                current_target_weight.clear();
-                current_src = src.clone();
-            }
-        }
-
-        let src_target = target[i].clone();
-        let src_target_weight = match &weights {
-            Some(we) => we[i],
-            None => 1f32,
-        };
-        current_target_weight.insert(src_target, src_target_weight);
-    }
-
-    if !current_target_weight.is_empty() {
-        let data: Vec<(String, f32)> = current_target_weight
-            .iter()
-            .map(|(key, value)| (key.clone(), *value))
-            .collect();
-        map.insert(current_src, data);
-    }
-
-    Ok(map)
-}
 
 fn validate_n_up(
     n_var: usize,
@@ -92,9 +35,7 @@ fn validate_n_up(
 
 fn au_cell_internal(
     all_values: Vec<(usize, f32)>,
-    cnct: &[usize],
-    starts: &[usize],
-    offsets: &[usize],
+    pathway_network: &PathwayNetwork,
     n_up: usize,
     n_src: usize,
 ) -> anyhow::Result<Vec<f32>> {
@@ -107,7 +48,7 @@ fn au_cell_internal(
     let mut v: Vec<(usize, f32)> = (0..n_src)
         .map(|j| {
             // dont know if we should actually parallelize here!
-            let functional_set = getset(cnct, starts, offsets, j);
+            let functional_set = pathway_network.get_pathway_features(j);
 
             let x_th = 1..=functional_set.len();
             let x_th: Vec<usize> = x_th.filter(|&v| v < n_up).collect();
@@ -157,9 +98,7 @@ fn au_cell_internal(
 
 fn au_cell_csr_row<T: FloatOpsTS>(
     lane: CsrRow<T>,
-    cnct: &[usize],
-    starts: &[usize],
-    offsets: &[usize],
+    pathway_network: &PathwayNetwork,
     n_up: usize,
     n_src: usize,
 ) -> anyhow::Result<Vec<f32>> {
@@ -172,14 +111,12 @@ fn au_cell_csr_row<T: FloatOpsTS>(
 
     all_values.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    au_cell_internal(all_values, cnct, starts, offsets, n_up, n_src)
+    au_cell_internal(all_values, pathway_network, n_up, n_src)
 }
 
 fn au_cell_csc_row<T: FloatOpsTS>(
     lane: CscCol<T>,
-    cnct: &[usize],
-    starts: &[usize],
-    offsets: &[usize],
+    pathway_network: &PathwayNetwork,
     n_up: usize,
     n_src: usize,
 ) -> anyhow::Result<Vec<f32>> {
@@ -192,20 +129,18 @@ fn au_cell_csc_row<T: FloatOpsTS>(
 
     all_values.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    au_cell_internal(all_values, cnct, starts, offsets, n_up, n_src)
+    au_cell_internal(all_values, pathway_network, n_up, n_src)
 }
 
 pub fn au_cell_csr<T: FloatOpsTS>(
     matrix: &CsrMatrix<T>,
-    cnct: &[usize],
-    starts: &[usize],
-    offsets: &[usize],
+    pathway_network: &PathwayNetwork,
     n_up_abs: Option<usize>,
     n_up_frac: Option<f32>,
     verbose: bool,
 ) -> anyhow::Result<Array2<f32>> {
     let (n_obs, n_vars) = (matrix.nrows(), matrix.ncols());
-    let n_src = starts.len();
+    let n_src = pathway_network.get_num_pathways();
     let n_up = validate_n_up(n_vars, n_up_abs, n_up_frac)?;
 
     let res: anyhow::Result<Vec<(usize, Vec<f32>)>> = match verbose {
@@ -215,7 +150,7 @@ pub fn au_cell_csr<T: FloatOpsTS>(
             .par_bridge()
             .progress_count(n_obs as u64)
             .map(|(i, r)| {
-                let re = au_cell_csr_row(r, cnct, starts, offsets, n_up, n_src)?;
+                let re = au_cell_csr_row(r, pathway_network, n_up, n_src)?;
                 Ok((i, re))
             })
             .collect(),
@@ -224,7 +159,7 @@ pub fn au_cell_csr<T: FloatOpsTS>(
             .enumerate()
             .par_bridge()
             .map(|(i, r)| {
-                let re = au_cell_csr_row(r, cnct, starts, offsets, n_up, n_src)?;
+                let re = au_cell_csr_row(r, pathway_network, n_up, n_src)?;
                 Ok((i, re))
             })
             .collect(),
@@ -240,15 +175,13 @@ pub fn au_cell_csr<T: FloatOpsTS>(
 
 pub fn au_cell_csc<T: FloatOpsTS>(
     matrix: CscMatrix<T>,
-    cnct: &[usize],
-    starts: &[usize],
-    offsets: &[usize],
+    pathway_network: &PathwayNetwork,
     n_up_abs: Option<usize>,
     n_up_frac: Option<f32>,
     verbose: bool,
 ) -> anyhow::Result<Array2<f32>> {
     let (n_obs, n_vars) = (matrix.ncols(), matrix.nrows());
-    let n_src = starts.len();
+    let n_src = pathway_network.get_num_pathways();
     let n_up = validate_n_up(n_vars, n_up_abs, n_up_frac)?;
 
     let res: anyhow::Result<Vec<(usize, Vec<f32>)>> = match verbose {
@@ -258,7 +191,7 @@ pub fn au_cell_csc<T: FloatOpsTS>(
             .par_bridge()
             .progress_count(n_obs as u64)
             .map(|(i, r)| {
-                let re = au_cell_csc_row(r, cnct, starts, offsets, n_up, n_src)?;
+                let re = au_cell_csc_row(r, pathway_network, n_up, n_src)?;
                 Ok((i, re))
             })
             .collect(),
@@ -267,7 +200,7 @@ pub fn au_cell_csc<T: FloatOpsTS>(
             .enumerate()
             .par_bridge()
             .map(|(i, r)| {
-                let re = au_cell_csc_row(r, cnct, starts, offsets, n_up, n_src)?;
+                let re = au_cell_csc_row(r, pathway_network, n_up, n_src)?;
                 Ok((i, re))
             })
             .collect(),
