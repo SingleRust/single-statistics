@@ -1,6 +1,6 @@
 [package]
 name = "single-statistics"
-version = "0.8.3"
+version = "0.8.5"
 edition = "2024"
 license-file = "LICENSE.md"
 readme = "README.md"
@@ -15,7 +15,7 @@ enrichment = []
 [dependencies]
 anyhow = "1.0.98"
 indicatif = {version = "0.18.2", features = ["rayon"]}
-nalgebra-sparse = "0.10.0"
+nalgebra-sparse = "0.11.0"
 ndarray = {version = "0.16.1", features = ["rayon"]}
 num-traits = "0.2.19"
 rayon = "1.10.0"
