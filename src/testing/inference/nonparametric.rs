@@ -15,41 +15,10 @@ use single_utilities::traits::FloatOpsTS;
 use statrs::distribution::{ContinuousCDF, Normal};
 
 use crate::testing::{Alternative, TestResult};
-
-#[derive(Debug, Clone)]
-struct TieInfo {
-    tie_counts: Vec<usize>,
-    tie_correction: f64,
-}
+use crate::testing::utils::SparseMatrixRef;
+use num_traits::AsPrimitive;
 
 /// Perform Mann-Whitney U tests on all genes comparing two groups of cells.
-///
-/// This function efficiently computes Mann-Whitney U statistics for all genes in a sparse
-/// matrix, comparing expression distributions between two groups of cells. The implementation
-/// uses parallel processing for improved performance on large datasets.
-///
-/// # Arguments
-///
-/// * `matrix` - Sparse expression matrix (genes × cells)
-/// * `group1_indices` - Column indices for the first group of cells
-/// * `group2_indices` - Column indices for the second group of cells
-/// * `alternative` - Type of alternative hypothesis (two-sided, less, greater)
-///
-/// # Returns
-///
-/// Vector of `TestResult` objects containing U statistics and p-values for each gene.
-/// let group1 = vec![0, 1, 2]; // First group of cells
-/// let group2 = vec![3, 4, 5]; // Second group of cells
-///
-/// let results = mann_whitney_matrix_groups(
-///     &matrix, 
-///     &group1, 
-///     &group2, 
-///     Alternative::TwoSided
-/// )?;
-/// # Ok(())
-/// # }
-/// ```
 pub fn mann_whitney_matrix_groups<T>(
     matrix: &CsrMatrix<T>,
     group1_indices: &[usize],
@@ -60,352 +29,201 @@ where
     T: FloatOpsTS,
     f64: std::convert::From<T>,
 {
+    let smr = SparseMatrixRef {
+        maj_ind: matrix.row_offsets(),
+        min_ind: matrix.col_indices(),
+        val: matrix.values(),
+        n_rows: matrix.nrows(),
+        n_cols: matrix.ncols(),
+    };
+    mann_whitney_sparse(smr, group1_indices, group2_indices, alternative)
+}
+
+/// Perform Mann-Whitney U tests on a sparse matrix represented by raw components.
+pub fn mann_whitney_sparse<T, N, I>(
+    matrix: SparseMatrixRef<T, N, I>,
+    group1_indices: &[usize],
+    group2_indices: &[usize],
+    alternative: Alternative,
+) -> anyhow::Result<Vec<TestResult<f64>>>
+where
+    T: FloatOpsTS,
+    N: AsPrimitive<usize> + Send + Sync,
+    I: AsPrimitive<usize> + Send + Sync,
+    f64: std::convert::From<T>,
+{
     if group1_indices.is_empty() || group2_indices.is_empty() {
         return Err(anyhow::anyhow!(
             "Single-Statistics | Group indices cannot be empty. Error code: SS-NP-001"
         ));
     }
 
-    // Simplified: use the same implementation regardless of size
-    let nrows = matrix.nrows();
+    let nrows = matrix.n_rows;
+    let n_group1 = group1_indices.len();
+    let n_group2 = group2_indices.len();
+
+    // Mapping from column index to group ID (0 for none, 1 for group1, 2 for group2)
+    let mut cell_groups = vec![0u8; matrix.n_cols];
+    for &idx in group1_indices {
+        if idx < cell_groups.len() { cell_groups[idx] = 1; }
+    }
+    for &idx in group2_indices {
+        if idx < cell_groups.len() { cell_groups[idx] = 2; }
+    }
 
     let results: Vec<_> = (0..nrows)
         .into_par_iter()
         .map(|row| {
-            let mut group1_values: Vec<f64> = Vec::with_capacity(group1_indices.len());
-            let mut group2_values: Vec<f64> = Vec::with_capacity(group2_indices.len());
+            let start = matrix.maj_ind[row].as_();
+            let end = matrix.maj_ind[row + 1].as_();
+            
+            let mut x_nonzero = Vec::new();
+            let mut y_nonzero = Vec::new();
+            let mut g1_nz_count = 0;
+            let mut g2_nz_count = 0;
 
-            extract_row_values(matrix, row, group1_indices, &mut group1_values);
-            extract_row_values(matrix, row, group2_indices, &mut group2_values);
+            for i in start..end {
+                let col = matrix.min_ind[i].as_();
+                let val = f64::from(matrix.val[i]);
+                
+                match cell_groups[col] {
+                    1 => {
+                        if val != 0.0 { x_nonzero.push(val); }
+                        g1_nz_count += 1;
+                    },
+                    2 => {
+                        if val != 0.0 { y_nonzero.push(val); }
+                        g2_nz_count += 1;
+                    },
+                    _ => {}
+                }
+            }
+            
+            let x_zeros = n_group1 - g1_nz_count;
+            let y_zeros = n_group2 - g2_nz_count;
 
-            mann_whitney_optimized(&group1_values, &group2_values, alternative)
+            mann_whitney_from_sparse_parts(x_nonzero, y_nonzero, x_zeros, y_zeros, alternative)
         })
         .collect();
 
     Ok(results)
 }
 
-/// Perform an optimized Mann-Whitney U test on two samples.
-///
-/// This function computes the Mann-Whitney U statistic and p-value for comparing two
-/// independent samples. It handles ties correctly and supports different alternative
-/// hypotheses.
-///
-/// # Arguments
-///
-/// * `x` - First sample
-/// * `y` - Second sample
-/// * `alternative` - Type of alternative hypothesis
-///
-/// # Returns
-///
-/// `TestResult` containing the U statistic and p-value.
-///
-/// # Example
-///
-/// ```rust
-/// use single_statistics::testing::inference::nonparametric::mann_whitney_optimized;
-/// use single_statistics::testing::Alternative;
-///
-/// let group1 = vec![1.0, 2.0, 3.0];
-/// let group2 = vec![4.0, 5.0, 6.0];
-/// let result = mann_whitney_optimized(&group1, &group2, Alternative::TwoSided);
-/// 
-/// println!("U statistic: {}, p-value: {}", result.statistic, result.p_value);
-/// ```
-pub fn mann_whitney_optimized(x: &[f64], y: &[f64], alternative: Alternative) -> TestResult<f64> {
-    let nx = x.len();
-    let ny = y.len();
+/// Core MW-U logic optimized for sparse scRNA-seq data (many zeros).
+fn mann_whitney_from_sparse_parts(
+    x_nonzero: Vec<f64>,
+    y_nonzero: Vec<f64>,
+    x_zeros: usize,
+    y_zeros: usize,
+    alternative: Alternative,
+) -> TestResult<f64> {
+    let nx = x_zeros + x_nonzero.len();
+    let ny = y_zeros + y_nonzero.len();
 
     if nx == 0 || ny == 0 {
         return TestResult::new(f64::NAN, 1.0);
     }
 
-    if nx == 1 && ny == 1 {
-        let (u, p_value) = if x[0] > y[0] {
-            (
-                1.0,
-                match alternative {
-                    Alternative::Greater => 0.5,
-                    Alternative::Less => 1.0,
-                    Alternative::TwoSided => 1.0,
-                },
-            )
-        } else if x[0] < y[0] {
-            (
-                0.0,
-                match alternative {
-                    Alternative::Greater => 1.0,
-                    Alternative::Less => 0.5,
-                    Alternative::TwoSided => 1.0,
-                },
-            )
-        } else {
-            (0.5, 1.0)
-        };
-        return TestResult::new(u, p_value);
-    }
+    let mut combined_nz: Vec<(f64, u8)> = Vec::with_capacity(x_nonzero.len() + y_nonzero.len());
+    for v in x_nonzero { combined_nz.push((v, 0)); }
+    for v in y_nonzero { combined_nz.push((v, 1)); }
+    combined_nz.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
 
-    let total_size = nx + ny;
-    let mut combined: Vec<(f64, u8)> = Vec::with_capacity(total_size);
+    let n_total = (nx + ny) as f64;
+    let (rank_sum_x, tie_correction) = {
+        let n_zeros = (x_zeros + y_zeros) as f64;
+        let mut rs_x = 0.0;
+        let mut t_corr = 0.0;
+        let mut current_rank = 1.0;
 
-    let mut valid_nx = 0;
-    let mut valid_ny = 0;
-
-    for &v in x {
-        if v.is_finite() {
-            combined.push((v, 0));
-            valid_nx += 1;
+        // Handle Zeros
+        if n_zeros > 0.0 {
+            let avg_rank_zeros = (n_zeros + 1.0) / 2.0;
+            rs_x += (x_zeros as f64) * avg_rank_zeros;
+            t_corr += n_zeros.powi(3) - n_zeros;
+            current_rank += n_zeros;
         }
-    }
 
-    for &v in y {
-        if v.is_finite() {
-            combined.push((v, 1));
-            valid_ny += 1;
+        // Handle Non-zeros
+        let mut i = 0;
+        while i < combined_nz.len() {
+            let val = combined_nz[i].0;
+            let start = i;
+            while i < combined_nz.len() && combined_nz[i].0 == val { i += 1; }
+            let count = (i - start) as f64;
+            let avg_rank = current_rank + (count - 1.0) / 2.0;
+            
+            for j in start..i {
+                if combined_nz[j].1 == 0 { rs_x += avg_rank; }
+            }
+            if count > 1.0 {
+                t_corr += count.powi(3) - count;
+            }
+            current_rank += count;
         }
-    }
-
-    if valid_nx == 0 || valid_ny == 0 {
-        return TestResult::new(f64::NAN, 1.0);
-    }
-
-    combined.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
-
-    let (rank_sum_x, tie_info) = calculate_rank_sum_with_ties(&combined, valid_nx, valid_ny);
-
-    let nx_f64 = valid_nx as f64;
-    let ny_f64 = valid_ny as f64;
-
-    let u_x = rank_sum_x - (nx_f64 * (nx_f64 + 1.0)) / 2.0;
-    let u_y = (nx_f64 * ny_f64) - u_x;
-
-    let mean_u = nx_f64 * ny_f64 / 2.0;
-
-    let n_total = nx_f64 + ny_f64;
-    let var_u = if tie_info.tie_correction > 0.0 {
-        (nx_f64 * ny_f64 / 12.0)
-            * (n_total + 1.0 - tie_info.tie_correction / (n_total * (n_total - 1.0)))
-    } else {
-        nx_f64 * ny_f64 * (n_total + 1.0) / 12.0
+        (rs_x, t_corr)
     };
 
-    let (u_statistic, z_score) = match alternative {
+    let nx_f = nx as f64;
+    let ny_f = ny as f64;
+    let u_x = rank_sum_x - (nx_f * (nx_f + 1.0)) / 2.0;
+    let u_y = (nx_f * ny_f) - u_x;
+    let mean_u = nx_f * ny_f / 2.0;
+    
+    let var_u = (nx_f * ny_f / (n_total * (n_total - 1.0))) * 
+                ((n_total.powi(3) - n_total - tie_correction) / 12.0);
+
+    let (u_stat, z) = match alternative {
         Alternative::TwoSided => {
             let u = u_x.min(u_y);
-            let z = if var_u > 0.0 {
-                let corrected_u = if u < mean_u { u + 0.5 } else { u - 0.5 };
-                (mean_u - corrected_u) / var_u.sqrt()
-            } else {
-                0.0
-            };
-            (u, z.abs())
-        }
-        Alternative::Less => {
-            let z = if var_u > 0.0 {
-                (mean_u - u_x - 0.5) / var_u.sqrt()
-            } else {
-                0.0
-            };
-            (u_x, z)
-        }
+            let z_score = if var_u > 0.0 {
+                ((u - mean_u).abs() - 0.5).max(0.0) / var_u.sqrt()
+            } else { 0.0 };
+            (u, z_score)
+        },
         Alternative::Greater => {
-            let z = if var_u > 0.0 {
+            let z_score = if var_u > 0.0 {
                 (u_x - mean_u - 0.5) / var_u.sqrt()
-            } else {
-                0.0
-            };
-            (u_x, z)
+            } else { 0.0 };
+            (u_x, z_score)
+        },
+        Alternative::Less => {
+            let z_score = if var_u > 0.0 {
+                (u_x - mean_u + 0.5) / var_u.sqrt()
+            } else { 0.0 };
+            (u_x, z_score)
         }
     };
 
-    let p_value = calculate_p_value(z_score, alternative, nx_f64, ny_f64);
-
-    let effect_size = if nx_f64 + ny_f64 > 0.0 {
-        z_score / (nx_f64 + ny_f64).sqrt()
-    } else {
-        0.0
-    };
-
-    let standard_error = var_u.sqrt();
-
-    TestResult::with_effect_size(u_statistic, p_value, effect_size)
-        .with_standard_error(standard_error)
-        .with_metadata("z_score", z_score.abs())
-        .with_metadata("mean_u", mean_u)
+    let p = calculate_p_value(z, alternative, nx_f, ny_f);
+    TestResult::new(u_stat, p)
+        .with_metadata("z_score", z)
         .with_metadata("var_u", var_u)
-        .with_metadata("nx", nx_f64)
-        .with_metadata("ny", ny_f64)
-        .with_metadata("tie_correction", tie_info.tie_correction)
+        .with_metadata("tie_correction", tie_correction)
+}
+
+/// Public API for two samples (dense).
+pub fn mann_whitney_optimized(x: &[f64], y: &[f64], alternative: Alternative) -> TestResult<f64> {
+    let mut x_nz = Vec::new();
+    let mut x_z = 0;
+    for &v in x { if v.is_finite() { if v == 0.0 { x_z += 1; } else { x_nz.push(v); } } }
+
+    let mut y_nz = Vec::new();
+    let mut y_z = 0;
+    for &v in y { if v.is_finite() { if v == 0.0 { y_z += 1; } else { y_nz.push(v); } } }
+
+    mann_whitney_from_sparse_parts(x_nz, y_nz, x_z, y_z, alternative)
 }
 
 #[inline]
 fn calculate_p_value(z: f64, alternative: Alternative, nx: f64, ny: f64) -> f64 {
-    if nx < 3.0 || ny < 3.0 {
-        return 1.0;
-    }
+    if nx < 3.0 || ny < 3.0 { return 1.0; }
+    if !z.is_finite() { return 1.0; }
 
-    if !z.is_finite() {
-        return 1.0;
-    }
-
-    if z.abs() > 37.0 {
-        let log_p = log_normal_tail_probability(z.abs());
-        return match alternative {
-            Alternative::TwoSided => (2.0 * log_p.exp()).min(1.0),
-            Alternative::Less | Alternative::Greater => log_p.exp().min(1.0),
-        };
-    }
-
-    match Normal::new(0.0, 1.0) {
-        Ok(normal) => match alternative {
-            Alternative::TwoSided => 2.0 * (1.0 - normal.cdf(z.abs())).min(0.5),
-            Alternative::Less => normal.cdf(z),
-            Alternative::Greater => 1.0 - normal.cdf(z),
-        },
-        Err(_) => 1.0,
-    }
-}
-
-#[inline]
-fn calculate_rank_sum_with_ties(combined: &[(f64, u8)], nx: usize, ny: usize) -> (f64, TieInfo) {
-    let mut rank_sum_x = 0.0;
-    let mut tie_counts = Vec::new();
-    let mut tie_correction = 0.0;
-    let mut i = 0;
-    let len = combined.len();
-
-    while i < len {
-        let val = combined[i].0;
-        let tie_start = i;
-
-        // Count ties
-        while i < len && combined[i].0 == val {
-            i += 1;
-        }
-
-        let tie_end = i;
-        let tie_size = tie_end - tie_start;
-
-        // Average rank for tied values
-        let avg_rank = (tie_start + tie_end - 1) as f64 / 2.0 + 1.0;
-
-        // Accumulate rank sum for group x
-        for j in tie_start..tie_end {
-            if combined[j].1 == 0 {
-                rank_sum_x += avg_rank;
-            }
-        }
-
-        // Calculate tie correction if there are ties
-        if tie_size > 1 {
-            tie_counts.push(tie_size);
-            let t = tie_size as f64;
-            tie_correction += t * (t * t - 1.0);
-        }
-    }
-
-    (
-        rank_sum_x,
-        TieInfo {
-            tie_counts,
-            tie_correction,
-        },
-    )
-}
-
-#[inline]
-fn log_normal_tail_probability(x: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-
-    if x > 8.0 {
-        let x_sq = x * x;
-        return -0.5 * x_sq - (x * (2.0 * std::f64::consts::PI).sqrt()).ln();
-    }
-
-    let z = x / (2.0_f64).sqrt();
-    log_erfc(z) - (2.0_f64).ln()
-}
-
-#[inline]
-fn log_erfc(x: f64) -> f64 {
-    if x < 0.0 {
-        return 0.0;
-    }
-
-    if x > 26.0 {
-        let x_sq = x * x;
-        return -x_sq - 0.5 * (std::f64::consts::PI).ln() - x.ln();
-    }
-
-    continued_fraction_log_erfc(x)
-}
-
-#[inline]
-fn continued_fraction_log_erfc(x: f64) -> f64 {
-    if x < 2.0 {
-        let erf_val = erf_series(x);
-        return (1.0 - erf_val).ln();
-    }
-
-    let x_sq = x * x;
-    let mut a = 1.0;
-    let mut b = 2.0 * x_sq;
-    let mut result = a / b;
-
-    for n in 1..50 {
-        a = -(2 * n - 1) as f64;
-        b = 2.0 * x_sq + a / result;
-        let new_result = a / b;
-
-        if (result - new_result).abs() < 1e-15 {
-            break;
-        }
-        result = new_result;
-    }
-
-    -x_sq + (result / (x * (std::f64::consts::PI).sqrt())).ln()
-}
-
-#[inline]
-fn erf_series(x: f64) -> f64 {
-    let x_sq = x * x;
-    let mut term = x;
-    let mut result = term;
-
-    for n in 1..100 {
-        term *= -x_sq / (n as f64);
-        let new_term = term / (2.0 * n as f64 + 1.0);
-        result += new_term;
-
-        if new_term.abs() < 1e-16 {
-            break;
-        }
-    }
-
-    result * 2.0 / (std::f64::consts::PI).sqrt()
-}
-
-#[inline]
-fn extract_row_values<T>(
-    matrix: &CsrMatrix<T>,
-    row: usize,
-    indices: &[usize],
-    values: &mut Vec<f64>,
-) where
-    T: FloatOpsTS,
-    f64: std::convert::From<T>,
-{
-    // Get row slice for efficient access
-    let row_view = matrix.row(row);
-
-    for &col in indices {
-        if let Some(value) = row_view.get_entry(col) {
-            values.push(value.into_value().into());
-        } else {
-            values.push(0.0);
-        }
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    match alternative {
+        Alternative::TwoSided => 2.0 * (1.0 - normal.cdf(z.abs())),
+        Alternative::Greater => 1.0 - normal.cdf(z),
+        Alternative::Less => normal.cdf(z),
     }
 }

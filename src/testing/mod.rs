@@ -48,6 +48,12 @@ pub enum TestMethod {
     /// **Use when**: Data is not normally distributed, or you want a robust rank-based test.
     /// **Best for**: Highly skewed expression data or small sample sizes.
     MannWhitney,
+
+    /// Fisher's Exact test for comparing frequencies of expression.
+    /// 
+    /// **Use when**: Comparing proportions (e.g., cell type proportions or expression frequency).
+    /// **Best for**: Categorical data and binary (expressed/not expressed) comparisons.
+    FisherExact,
     
     /// Negative binomial test for count data with overdispersion.
     /// 

@@ -364,24 +364,24 @@ mod quick_test {
     fn test_matrix_based_workflow() {
         // Test the matrix-based function that would be used in real single-cell analysis
         
-        // Create a small test matrix: 6 cells x 3 genes
+        // Create a small test matrix: 3 genes x 6 cells
         // Gene 0: [1,1,1,5,5,5] - clear difference between groups
         // Gene 1: [3,3,3,3,3,3] - no difference
         // Gene 2: [0,0,1,2,3,4] - moderate difference
         
-        let mut coo = CooMatrix::new(6, 3); // 6 cells x 3 genes
+        let mut coo = CooMatrix::new(3, 6); // 3 genes x 6 cells
         
         // Gene 0 values - clear difference
-        coo.push(0, 0, 1.0f64); coo.push(1, 0, 1.0); coo.push(2, 0, 1.0);
-        coo.push(3, 0, 5.0); coo.push(4, 0, 5.0); coo.push(5, 0, 5.0);
+        coo.push(0, 0, 1.0f64); coo.push(0, 1, 1.0); coo.push(0, 2, 1.0);
+        coo.push(0, 3, 5.0); coo.push(0, 4, 5.0); coo.push(0, 5, 5.0);
         
         // Gene 1 values - all same (should not be significant)
-        coo.push(0, 1, 3.0); coo.push(1, 1, 3.0); coo.push(2, 1, 3.0);
-        coo.push(3, 1, 3.0); coo.push(4, 1, 3.0); coo.push(5, 1, 3.0);
+        coo.push(1, 0, 3.0); coo.push(1, 1, 3.0); coo.push(1, 2, 3.0);
+        coo.push(1, 3, 3.0); coo.push(1, 4, 3.0); coo.push(1, 5, 3.0);
         
         // Gene 2 values - moderate difference
-        coo.push(0, 2, 0.0); coo.push(1, 2, 0.0); coo.push(2, 2, 1.0);
-        coo.push(3, 2, 2.0); coo.push(4, 2, 3.0); coo.push(5, 2, 4.0);
+        coo.push(2, 0, 0.0); coo.push(2, 1, 0.0); coo.push(2, 2, 1.0);
+        coo.push(2, 3, 2.0); coo.push(2, 4, 3.0); coo.push(2, 5, 4.0);
         
         let matrix = CsrMatrix::from(&coo);
         
@@ -389,15 +389,15 @@ mod quick_test {
         let group2_indices = vec![3, 4, 5]; // Last 3 cells
         
         println!("\n=== MATRIX-BASED WORKFLOW TEST ===");
-        println!("Matrix shape: {} cells x {} genes", matrix.nrows(), matrix.ncols());
+        println!("Matrix shape: {} genes x {} cells", matrix.nrows(), matrix.ncols());
         println!("Group 1 indices: {:?}", group1_indices);
         println!("Group 2 indices: {:?}", group2_indices);
         
         // Debug: print the actual matrix values
-        for gene in 0..matrix.ncols() {
+        for gene in 0..matrix.nrows() {
             print!("Gene {}: [", gene);
-            for cell in 0..matrix.nrows() {
-                let value = matrix.get_entry(cell, gene).map_or(0.0, |entry| entry.into_value());
+            for cell in 0..matrix.ncols() {
+                let value = matrix.get_entry(gene, cell).map_or(0.0, |entry| entry.into_value());
                 print!("{}, ", value);
             }
             println!("]");

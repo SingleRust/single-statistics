@@ -423,7 +423,7 @@ where
     // Multiply by pi0 to get q-values
     let q_values = bh_adjusted
         .iter()
-        .map(|&p| num_traits::Float::min((p * pi0), one))
+        .map(|&p| num_traits::Float::min(p * pi0, one))
         .collect();
 
     Ok(q_values)

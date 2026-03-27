@@ -4,11 +4,12 @@
 //! sparse single-cell expression matrices. The implementations are designed for efficiency
 //! when testing thousands of genes across different cell groups.
 
-use crate::testing::utils::accumulate_gene_statistics_two_groups;
+use crate::testing::utils::{accumulate_gene_statistics_two_groups_raw, SparseMatrixRef};
 use crate::testing::{TTestType, TestResult};
 use nalgebra_sparse::CsrMatrix;
 use single_utilities::traits::{FloatOps, FloatOpsTS};
 use statrs::distribution::{ContinuousCDF, StudentsT};
+use num_traits::AsPrimitive;
 
 /// Perform t-tests on all genes comparing two groups of cells.
 ///
@@ -17,7 +18,7 @@ use statrs::distribution::{ContinuousCDF, StudentsT};
 ///
 /// # Arguments
 ///
-/// * `matrix` - Sparse expression matrix (genes × cells)
+/// * `matrix` - Sparse expression matrix (cells × genes)
 /// * `group1_indices` - Column indices for the first group of cells
 /// * `group2_indices` - Column indices for the second group of cells
 /// * `test_type` - Type of t-test to perform (Student's or Welch's)
@@ -34,16 +35,42 @@ pub fn t_test_matrix_groups<T>(
 where
     T: FloatOpsTS,
 {
+    let smr = SparseMatrixRef {
+        maj_ind: matrix.row_offsets(),
+        min_ind: matrix.col_indices(),
+        val: matrix.values(),
+        n_rows: matrix.nrows(),
+        n_cols: matrix.ncols(),
+    };
+    t_test_sparse(smr, group1_indices, group2_indices, test_type)
+}
+
+/// Perform t-tests on a sparse matrix represented by raw components.
+/// 
+/// This version is agnostic of the matrix container and can be used with raw vectors.
+pub fn t_test_sparse<T, N, I>(
+    matrix: SparseMatrixRef<T, N, I>,
+    group1_indices: &[usize],
+    group2_indices: &[usize],
+    test_type: TTestType,
+) -> anyhow::Result<Vec<TestResult<f64>>>
+where
+    T: FloatOpsTS,
+    N: AsPrimitive<usize> + Send + Sync,
+    I: AsPrimitive<usize> + Send + Sync,
+{
     if group1_indices.is_empty() || group2_indices.is_empty() {
         return Err(anyhow::anyhow!("Group indices cannot be empty"));
     }
 
-    let n_genes = matrix.ncols();
+    let n_genes = matrix.n_rows;
     let group1_size = T::from(group1_indices.len()).unwrap();
     let group2_size = T::from(group2_indices.len()).unwrap();
 
-        let (group1_sums, group1_sum_squares, group2_sums, group2_sum_squares) =
-            accumulate_gene_statistics_two_groups(matrix, group1_indices, group2_indices)?;    let results: Vec<TestResult<f64>> = (0..n_genes)
+    let (group1_sums, group1_sum_squares, group2_sums, group2_sum_squares) =
+        accumulate_gene_statistics_two_groups_raw(matrix, group1_indices, group2_indices, n_genes)?;
+
+    let results: Vec<TestResult<f64>> = (0..n_genes)
         .map(|gene_idx| {
             fast_t_test_from_sums(
                 group1_sums[gene_idx].to_f64().unwrap(),
@@ -403,4 +430,3 @@ fn chebyshev_erfc(x: f64) -> f64 {
     
     poly * (-x * x).exp()
 }
-

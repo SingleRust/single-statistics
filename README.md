@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/single-statistics.svg)](https://crates.io/crates/single-statistics)
 [![Documentation](https://docs.rs/single-statistics/badge.svg)](https://docs.rs/single-statistics)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
+[![License: BSD 3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](LICENSE.md)
 
 A specialized Rust library for statistical analysis of single-cell data, part of the single-rust ecosystem.
 
