@@ -23,6 +23,66 @@ use anyhow::{Result, anyhow};
 use single_utilities::traits::FloatOps;
 use std::cmp::Ordering;
 
+/// Least-squares fit of `y = a + b*x + c*x^2` evaluated at `x = 1`.
+///
+/// Returns `None` when the normal equations are singular (fewer than three distinct
+/// x values, or a degenerate grid).
+fn fit_quadratic_at_one<T>(xs: &[T], ys: &[T]) -> Option<T>
+where
+    T: FloatOps,
+{
+    if xs.len() < 3 || xs.len() != ys.len() {
+        return None;
+    }
+
+    // Accumulate the normal-equation moments in f64 regardless of T's width.
+    let (mut s0, mut s1, mut s2, mut s3, mut s4) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
+    let (mut t0, mut t1, mut t2) = (0.0f64, 0.0, 0.0);
+    for (x, y) in xs.iter().zip(ys.iter()) {
+        let x = x.to_f64()?;
+        let y = y.to_f64()?;
+        let (x2, x3, x4) = (x * x, x * x * x, x * x * x * x);
+        s0 += 1.0;
+        s1 += x;
+        s2 += x2;
+        s3 += x3;
+        s4 += x4;
+        t0 += y;
+        t1 += x * y;
+        t2 += x2 * y;
+    }
+
+    // Solve the 3x3 symmetric system by Cramer's rule.
+    let det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+
+    let det_a = t0 * (s2 * s4 - s3 * s3) - s1 * (t1 * s4 - s3 * t2) + s2 * (t1 * s3 - s2 * t2);
+    let det_b = s0 * (t1 * s4 - s3 * t2) - t0 * (s1 * s4 - s3 * s2) + s2 * (s1 * t2 - t1 * s2);
+    let det_c = s0 * (s2 * t2 - t1 * s3) - s1 * (s1 * t2 - t1 * s2) + t0 * (s1 * s3 - s2 * s2);
+
+    // Value at x = 1 is simply a + b + c.
+    let at_one = (det_a + det_b + det_c) / det;
+    T::from(at_one)
+}
+
+/// Reject anything outside `[0, 1]`, including NaN, before correcting.
+///
+/// Every procedure here validates its input the same way, so a NaN cannot silently
+/// reorder the sort and corrupt the whole adjusted vector.
+fn validate_p_values<T>(p_values: &[T]) -> Result<()>
+where
+    T: FloatOps,
+{
+    for (i, &p) in p_values.iter().enumerate() {
+        if !(p >= T::zero() && p <= T::one()) {
+            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
+        }
+    }
+    Ok(())
+}
+
 /// Apply Bonferroni correction to p-values
 ///
 /// Bonferroni correction is a simple but conservative method that multiplies
@@ -49,12 +109,7 @@ where
         return Err(anyhow!("Empty p-value array"));
     }
 
-    // Validate p-values
-    for (i, &p) in p_values.iter().enumerate() {
-        if !(T::zero()..=T::one()).contains(&p) {
-            return Err(anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
-        }
-    }
+    validate_p_values(p_values)?;
 
     // Multiply each p-value by n, capping at 1.0
     let n_t = T::from(n).unwrap();
@@ -91,12 +146,7 @@ where
         return Err(anyhow::anyhow!("Empty p-value array"));
     }
 
-    // Validate p-values
-    for (i, &p) in p_values.iter().enumerate() {
-        if !(T::zero()..=T::one()).contains(&p) {
-            return Err(anyhow::anyhow!("Invalid p-value at index {:?}: {:?}", i, p));
-        }
-    }
+    validate_p_values(p_values)?;
     
     let n_f = T::from(n).unwrap();
 
@@ -145,6 +195,8 @@ where
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
+
+    validate_p_values(p_values)?;
 
     // Calculate the correction factor
     let c_n: T = (1..=n).map(|i| T::one() / T::from(i).unwrap()).sum();
@@ -204,12 +256,7 @@ where
     let zero = T::zero();
     let one = T::one();
 
-    // Validate p-values
-    for (i, &p) in p_values.iter().enumerate() {
-        if p < zero || p > one {
-            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
-        }
-    }
+    validate_p_values(p_values)?;
 
     // Create index-value pairs and sort by p-value
     let mut indexed_p_values: Vec<(usize, T)> =
@@ -220,12 +267,16 @@ where
     // Initialize the result vector
     let mut adjusted_p_values = vec![zero; n];
 
-    // Calculate adjusted p-values
+    // Calculate adjusted p-values. Holm is a step-down procedure: walking the
+    // sorted p-values upwards, each adjusted value must be at least as large as
+    // every one before it, otherwise the output is non-monotone.
+    let mut running_max = zero;
     for (i, &(idx, p_val)) in indexed_p_values.iter().enumerate() {
         // Convert (n - i) to type T
         let multiplier = T::from((n - i) as f64).unwrap_or(one);
-        let adjusted_p = p_val * multiplier;
-        adjusted_p_values[idx] = num_traits::Float::min(adjusted_p, one);
+        let adjusted_p = num_traits::Float::min(p_val * multiplier, one);
+        running_max = num_traits::Float::max(adjusted_p, running_max);
+        adjusted_p_values[idx] = running_max;
     }
 
     Ok(adjusted_p_values)
@@ -256,6 +307,8 @@ where
     if n == 0 {
         return Err(anyhow!("Empty p-value array"));
     }
+
+    validate_p_values(p_values)?;
 
     let zero = T::zero();
     let one = T::one();
@@ -324,12 +377,7 @@ where
         return Err(anyhow!("Lambda must be between 0 and 1, got {:?}", lambda));
     }
 
-    // Validate p-values
-    for (i, &p) in p_values.iter().enumerate() {
-        if p < zero || p > one {
-            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
-        }
-    }
+    validate_p_values(p_values)?;
 
     // Estimate pi0 (proportion of true null hypotheses)
     let w = p_values.iter().filter(|&&p| p > lambda).count();
@@ -351,10 +399,16 @@ where
     Ok(q_values)
 }
 
-/// Apply adaptive Storey's q-value method with automatic lambda selection
+/// Apply Storey's q-value method with automatic lambda selection
 ///
-/// This version of Storey's method tries multiple lambda values and selects the one
-/// that minimizes the mean-squared error of the π0 estimate.
+/// Estimates π0 across a grid of lambda values and extrapolates the trend to λ → 1,
+/// which is where the estimate is least biased. The extrapolation is a least-squares
+/// quadratic fit over the grid — a deterministic stand-in for the cubic-spline
+/// smoother of Storey & Tibshirani (2003).
+///
+/// This is *not* the bootstrap MSE-minimising selector of Storey, Taylor & Siegmund
+/// (2004); that requires resampling. For a fixed, known lambda use
+/// [`storey_qvalues`] instead.
 ///
 /// # Arguments
 /// * `p_values` - A slice of p-values to adjust
@@ -380,12 +434,7 @@ where
     let zero = T::zero();
     let one = T::one();
 
-    // Validate p-values
-    for (i, &p) in p_values.iter().enumerate() {
-        if p < zero || p > one {
-            return Err(anyhow!("Invalid p-value at index {}: {:?}", i, p));
-        }
-    }
+    validate_p_values(p_values)?;
 
     // Define lambda grid - convert f64 values to type T
     let lambda_values = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
@@ -405,16 +454,18 @@ where
         pi0_estimates.push(num_traits::Float::min(pi0, one));
     }
 
-    // Fit smooth cubic spline (simplified here with linear interpolation to the final value)
-    // In practice, a proper spline fitting would be better
-    let pi0_sum: T = pi0_estimates.iter().copied().sum();
-    let estimates_len = T::from(pi0_estimates.len() as f64).unwrap_or(one);
-    let pi0_mean = pi0_sum / estimates_len;
-
+    // Extrapolate the pi0(lambda) trend to lambda = 1 with a least-squares quadratic.
+    // Averaging the grid instead (as this previously did) biases the estimate towards
+    // the small-lambda end, where pi0 is most inflated.
     let pi0 = if pi0_estimates.is_empty() {
         one
     } else {
-        num_traits::Float::min(pi0_mean, one)
+        let fitted = fit_quadratic_at_one(&lambda_grid, &pi0_estimates).unwrap_or_else(|| {
+            // Degenerate grid: fall back to the largest-lambda estimate, which is the
+            // least biased single point available.
+            *pi0_estimates.last().unwrap()
+        });
+        num_traits::Float::min(num_traits::Float::max(fitted, zero), one)
     };
 
     // First apply Benjamini-Hochberg to get base adjusted values
@@ -486,8 +537,8 @@ mod tests {
     #[test]
     fn test_benjamini_hochberg_identical_pvalues() {
         // Test with identical p-values
-        let p_values = vec![0.05, 0.05, 0.05];
-        let expected = vec![0.05, 0.05, 0.05];
+        let p_values = [0.05, 0.05, 0.05];
+        let expected = [0.05, 0.05, 0.05];
         let adjusted = benjamini_hochberg_correction(&p_values).unwrap();
 
         for (a, e) in adjusted.iter().zip(expected.iter()) {
@@ -498,8 +549,8 @@ mod tests {
     #[test]
     fn test_benjamini_hochberg_ordered_pvalues() {
         // Test with ordered p-values
-        let p_values = vec![0.01, 0.02, 0.03, 0.04, 0.05];
-        let expected = vec![0.05, 0.05, 0.05, 0.05, 0.05];
+        let p_values = [0.01, 0.02, 0.03, 0.04, 0.05];
+        let expected = [0.05, 0.05, 0.05, 0.05, 0.05];
         let adjusted = benjamini_hochberg_correction(&p_values).unwrap();
 
         for (i, (&a, &e)) in adjusted.iter().zip(expected.iter()).enumerate() {
@@ -514,8 +565,8 @@ mod tests {
     #[test]
     fn test_benjamini_hochberg_unordered_pvalues() {
         // Test with unordered p-values
-        let p_values = vec![0.05, 0.01, 0.1, 0.04, 0.02];
-        let expected = vec![0.0625, 0.05, 0.1, 0.0625, 0.05];
+        let p_values = [0.05, 0.01, 0.1, 0.04, 0.02];
+        let expected = [0.0625, 0.05, 0.1, 0.0625, 0.05];
         let adjusted = benjamini_hochberg_correction(&p_values).unwrap();
 
         for (i, (&a, &e)) in adjusted.iter().zip(expected.iter()).enumerate() {
@@ -570,10 +621,28 @@ mod tests {
     }
     #[test]
     fn test_holm_bonferroni() {
+        // Matches R: p.adjust(c(0.01, 0.02, 0.03), method = "holm") -> 0.03 0.04 0.04
         let p_values = vec![0.01, 0.02, 0.03];
-        let expected = vec![0.03, 0.04, 0.03];
+        let expected = vec![0.03, 0.04, 0.04];
         let adjusted = holm_bonferroni_correction(&p_values).unwrap();
         assert_vec_relative_eq(&adjusted, &expected, 1e-10);
+    }
+
+    #[test]
+    fn test_holm_bonferroni_is_monotone() {
+        // Step-down output must never decrease as the raw p-value increases.
+        let p_values = vec![0.001, 0.008, 0.02, 0.03, 0.04, 0.5, 0.9];
+        let adjusted = holm_bonferroni_correction(&p_values).unwrap();
+
+        let mut order: Vec<usize> = (0..p_values.len()).collect();
+        order.sort_by(|&a, &b| p_values[a].partial_cmp(&p_values[b]).unwrap());
+        for w in order.windows(2) {
+            assert!(
+                adjusted[w[1]] >= adjusted[w[0]],
+                "non-monotone: p={} -> {} but p={} -> {}",
+                p_values[w[0]], adjusted[w[0]], p_values[w[1]], adjusted[w[1]]
+            );
+        }
     }
 
     #[test]
@@ -587,6 +656,57 @@ mod tests {
         // Verify ordering is preserved
         assert!(qvalues[0] <= qvalues[2]);
         assert!(qvalues[3] <= qvalues[4]);
+    }
+
+    #[test]
+    fn test_all_procedures_validate_p_values() {
+        // Every procedure must reject out-of-range input, not just some of them.
+        let invalid = vec![0.1, 1.5, 0.3];
+        assert!(bonferroni_correction(&invalid).is_err());
+        assert!(benjamini_hochberg_correction(&invalid).is_err());
+        assert!(benjamini_yekutieli_correction(&invalid).is_err());
+        assert!(holm_bonferroni_correction(&invalid).is_err());
+        assert!(hochberg_correction(&invalid).is_err());
+        assert!(storey_qvalues(&invalid, 0.5).is_err());
+        assert!(adaptive_storey_qvalues(&invalid).is_err());
+    }
+
+    #[test]
+    fn test_nan_p_values_are_rejected() {
+        // A NaN would otherwise reorder the sort arbitrarily and corrupt every output.
+        let with_nan = vec![0.1, f64::NAN, 0.3];
+        assert!(benjamini_hochberg_correction(&with_nan).is_err());
+        assert!(benjamini_yekutieli_correction(&with_nan).is_err());
+        assert!(hochberg_correction(&with_nan).is_err());
+        assert!(holm_bonferroni_correction(&with_nan).is_err());
+    }
+
+    #[test]
+    fn test_adaptive_storey_pi0_stays_in_range() {
+        // Mostly-null data: pi0 should be near 1, so q-values stay close to BH.
+        let mut p_values: Vec<f64> = (1..=100).map(|i| i as f64 / 100.0).collect();
+        p_values[0] = 1e-8;
+        let q = adaptive_storey_qvalues(&p_values).unwrap();
+        assert!(q.iter().all(|&v| (0.0..=1.0).contains(&v)), "q out of range");
+
+        let bh = benjamini_hochberg_correction(&p_values).unwrap();
+        for (qi, bi) in q.iter().zip(bh.iter()) {
+            assert!(*qi <= *bi + 1e-12, "q-value {} must not exceed BH {}", qi, bi);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_storey_shrinks_when_signal_is_strong() {
+        // Heavily enriched for small p-values -> pi0 well below 1 -> q-values below BH.
+        let mut p_values: Vec<f64> = (0..90).map(|i| 1e-6 * (i + 1) as f64).collect();
+        p_values.extend((0..10).map(|i| 0.5 + i as f64 / 100.0));
+
+        let q = adaptive_storey_qvalues(&p_values).unwrap();
+        let bh = benjamini_hochberg_correction(&p_values).unwrap();
+        assert!(
+            q.iter().zip(bh.iter()).any(|(a, b)| *a < *b - 1e-12),
+            "with strong signal the q-values should be strictly smaller than BH somewhere"
+        );
     }
 
     #[test]

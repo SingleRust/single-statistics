@@ -8,10 +8,16 @@
 //!
 //! ## Core Features
 //!
-//! - **Differential Expression Analysis**: T-tests, Mann-Whitney U tests, and other statistical methods
+//! - **Differential Expression Analysis**: t-tests, Mann-Whitney U (Wilcoxon rank-sum),
+//!   Wilcoxon signed-rank, Kruskal-Wallis, and Fisher's exact test
 //! - **Multiple Testing Correction**: FDR, Bonferroni, and other correction methods
 //! - **Effect Size Calculations**: Cohen's d and other effect size measures
-//! - **Sparse Matrix Support**: Optimized for `CsrMatrix` from nalgebra-sparse
+//! - **Sparse Matrix Support**: container-agnostic via [`testing::utils::SparseMatrixRef`],
+//!   a borrowed view over raw CSR/CSC slices. Implementations are written against that
+//!   view, so any backend that can expose `indptr`/`indices`/`data` slices works —
+//!   including arrays passed across an FFI boundary such as PyO3. [`sprs`] matrices are
+//!   supported directly through [`testing::utils::SprsView`], in either storage order
+//!   and including outer-sliced views.
 //!
 //! ## Quick Start
 //!
@@ -27,3 +33,5 @@
 pub mod testing;
 #[cfg(feature = "enrichment")]
 pub mod enrichment;
+#[cfg(feature = "spatial")]
+pub mod spatial;

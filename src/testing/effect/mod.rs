@@ -1,60 +1,84 @@
-use nalgebra_sparse::CsrMatrix;
+//! Effect size calculations for differential expression.
+//!
+//! # Orientation
+//!
+//! Every function here takes a gene (major axis) index and two sets of **cell**
+//! indices along the minor axis, matching the rest of the crate. Prior to the sprs
+//! migration `calculate_log2_fold_change` interpreted its index arguments as rows
+//! (cells) while `calculate_cohens_d` interpreted them as columns (genes); the two
+//! now agree.
+
+use crate::testing::utils::SparseMatrixRef;
+use num_traits::AsPrimitive;
 use single_utilities::traits::{FloatOps, FloatOpsTS};
 
-/// Calculate log2 fold change between two groups
-pub fn calculate_log2_fold_change<T>(
-    matrix: &CsrMatrix<T>,
-    col: usize,
+/// Collect one gene's values across a set of cells, materialising implicit zeros.
+fn gather_gene_values<T, N, I>(
+    matrix: &SparseMatrixRef<T, N, I>,
+    gene: usize,
+    cell_indices: &[usize],
+) -> Vec<T>
+where
+    T: FloatOpsTS,
+    N: AsPrimitive<usize> + Send + Sync,
+    I: AsPrimitive<usize> + Send + Sync,
+{
+    cell_indices
+        .iter()
+        .map(|&cell| matrix.get_entry(gene, cell))
+        .collect()
+}
+
+/// Calculate the log2 fold change of one gene between two groups of cells.
+///
+/// `pseudo_count` is added to both group means before the ratio is taken, which
+/// keeps the result finite when a group has no expression at all.
+pub fn calculate_log2_fold_change<T, N, I>(
+    matrix: &SparseMatrixRef<T, N, I>,
+    gene: usize,
     group1_indices: &[usize], // Group of interest
     group2_indices: &[usize], // Reference group
-    pseudo_count: T,        // Small value like 1e-9 or 1.0
+    pseudo_count: T,
 ) -> anyhow::Result<T>
 where
-    T: FloatOps,
+    T: FloatOpsTS,
+    N: AsPrimitive<usize> + Send + Sync,
+    I: AsPrimitive<usize> + Send + Sync,
 {
     if group1_indices.is_empty() || group2_indices.is_empty() {
         return Err(anyhow::anyhow!("Group indices cannot be empty"));
     }
 
     let mut sum1 = T::zero();
-    let mut _count1 = 0;
-    for &row in group1_indices {
-        if let Some(entry) = matrix.get_entry(row, col) {
-            let value = entry.into_value();
-            sum1 += value;
-            _count1 += 1;
-        }
+    for &cell in group1_indices {
+        sum1 += matrix.get_entry(gene, cell);
     }
 
     let mut sum2 = T::zero();
-    let mut _count2 = 0;
-    for &row in group2_indices {
-        if let Some(entry) = matrix.get_entry(row, col) {
-            let value = entry.into_value();
-            sum2 += value;
-            _count2 += 1;
-        }
+    for &cell in group2_indices {
+        sum2 += matrix.get_entry(gene, cell);
     }
-    let go_f64 = T::from(group1_indices.len()).unwrap();
-    let gt_f64 = T::from(group2_indices.len()).unwrap();
 
-    let mean1 = sum1 / go_f64 + pseudo_count;
-    let mean2 = sum2 / gt_f64 + pseudo_count;
+    let n1 = T::from(group1_indices.len()).unwrap();
+    let n2 = T::from(group2_indices.len()).unwrap();
 
-    let log2_fc = (mean1 / mean2).log2();
+    let mean1 = sum1 / n1 + pseudo_count;
+    let mean2 = sum2 / n2 + pseudo_count;
 
-    Ok(log2_fc)
+    Ok((mean1 / mean2).log2())
 }
 
-/// Calculate Cohen's d effect size for a row
-pub fn calculate_cohens_d<T>(
-    matrix: &CsrMatrix<T>,
-    row: usize,
+/// Calculate Cohen's d effect size for one gene between two groups of cells.
+pub fn calculate_cohens_d<T, N, I>(
+    matrix: &SparseMatrixRef<T, N, I>,
+    gene: usize,
     group1_indices: &[usize],
     group2_indices: &[usize],
 ) -> anyhow::Result<T>
 where
     T: FloatOpsTS,
+    N: AsPrimitive<usize> + Send + Sync,
+    I: AsPrimitive<usize> + Send + Sync,
 {
     if group1_indices.len() < 2 || group2_indices.len() < 2 {
         return Err(anyhow::anyhow!(
@@ -62,77 +86,54 @@ where
         ));
     }
 
-    // Extract values for group 1
-    let mut sum_g1 = T::zero();
-    let mut group1_values = Vec::with_capacity(group1_indices.len());
-    for &col in group1_indices {
-        if let Some(entry) = matrix.get_entry(row, col) {
-            let value = entry.into_value();
-            sum_g1 += value;
-            group1_values.push(value);
-        } else {
-            group1_values.push(T::zero());
-        }
-    }
+    let group1_values = gather_gene_values(matrix, gene, group1_indices);
+    let group2_values = gather_gene_values(matrix, gene, group2_indices);
 
-    // Extract values for group 2
-    let mut sum_g2 = T::zero();
-    let mut group2_values = Vec::with_capacity(group2_indices.len());
-    for &col in group2_indices {
-        if let Some(entry) = matrix.get_entry(row, col) {
-            let value = entry.into_value();
-            sum_g2 += value;
-            group2_values.push(value);
-        } else {
-            group2_values.push(T::zero());
-        }
-    }
+    let n1 = T::from(group1_values.len()).unwrap();
+    let n2 = T::from(group2_values.len()).unwrap();
 
-    let go_t = T::from(group1_indices.len()).unwrap();
-    let gt_t = T::from(group2_indices.len()).unwrap();
+    let mean1 = group1_values.iter().copied().sum::<T>() / n1;
+    let mean2 = group2_values.iter().copied().sum::<T>() / n2;
 
-    // Calculate means
-    let mean1 = sum_g1 / go_t;
-    let mean2 = sum_g2 / gt_t;
-    // Calculate variances
+    // Two-pass variance: numerically stable where the sum-of-squares shortcut is not.
     let var1 = group1_values
         .iter()
         .map(|&x| num_traits::Float::powi(x - mean1, 2))
         .sum::<T>()
-        / (go_t - T::one());
+        / (n1 - T::one());
 
     let var2 = group2_values
         .iter()
         .map(|&x| num_traits::Float::powi(x - mean2, 2))
         .sum::<T>()
-        / (gt_t - T::one());
+        / (n2 - T::one());
 
-    // Calculate pooled standard deviation
-    let pooled_sd = (((go_t - T::one()) * var1 + (gt_t - T::one()) * var2) / (go_t + gt_t - T::from(2.0).unwrap())).sqrt();
+    let pooled_sd = (((n1 - T::one()) * var1 + (n2 - T::one()) * var2)
+        / (n1 + n2 - T::from(2.0).unwrap()))
+    .sqrt();
 
-    // Calculate Cohen's d
-    let d = (mean2 - mean1) / pooled_sd;
-
-    Ok(d)
+    Ok((mean2 - mean1) / pooled_sd)
 }
 
-/// Calculate Hedge's g (bias-corrected effect size)
-pub fn calculate_hedges_g<T>(
-    matrix: &CsrMatrix<T>,
-    row: usize,
+/// Calculate Hedges' g, the bias-corrected form of Cohen's d.
+pub fn calculate_hedges_g<T, N, I>(
+    matrix: &SparseMatrixRef<T, N, I>,
+    gene: usize,
     group1_indices: &[usize],
     group2_indices: &[usize],
 ) -> anyhow::Result<T>
 where
     T: FloatOpsTS,
+    N: AsPrimitive<usize> + Send + Sync,
+    I: AsPrimitive<usize> + Send + Sync,
 {
-    // First calculate Cohen's d
-    let d = calculate_cohens_d(matrix, row, group1_indices, group2_indices)?;
+    let d = calculate_cohens_d(matrix, gene, group1_indices, group2_indices)?;
+
     let one = T::one();
     let two = T::from(2.0).unwrap();
     let three = T::from(3.0).unwrap();
     let four = T::from(4.0).unwrap();
-    // Apply correction factor
+
     let n1 = T::from(group1_indices.len()).unwrap();
     let n2 = T::from(group2_indices.len()).unwrap();
     let n = n1 + n2;
@@ -140,10 +141,43 @@ where
     // Correction factor J
     let j = one - three / (four * (n - two) - one);
 
-    // Calculate Hedge's g
-    let g = j * d;
-
-    Ok(g)
+    Ok(j * d)
 }
 
+/// Cohen's d from two already-materialised samples.
+///
+/// Useful when the values have been gathered by other means (for example from a
+/// dense array or a pseudobulk aggregation).
+pub fn cohens_d_from_samples<T>(x: &[T], y: &[T]) -> anyhow::Result<T>
+where
+    T: FloatOps,
+{
+    if x.len() < 2 || y.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "Each group must have at least 2 samples for Cohen's d"
+        ));
+    }
 
+    let n1 = T::from(x.len()).unwrap();
+    let n2 = T::from(y.len()).unwrap();
+
+    let mean1 = x.iter().copied().sum::<T>() / n1;
+    let mean2 = y.iter().copied().sum::<T>() / n2;
+
+    let var1 = x
+        .iter()
+        .map(|&v| num_traits::Float::powi(v - mean1, 2))
+        .sum::<T>()
+        / (n1 - T::one());
+    let var2 = y
+        .iter()
+        .map(|&v| num_traits::Float::powi(v - mean2, 2))
+        .sum::<T>()
+        / (n2 - T::one());
+
+    let pooled_sd = (((n1 - T::one()) * var1 + (n2 - T::one()) * var2)
+        / (n1 + n2 - T::from(2.0).unwrap()))
+    .sqrt();
+
+    Ok((mean2 - mean1) / pooled_sd)
+}

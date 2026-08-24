@@ -13,10 +13,24 @@ A specialized Rust library for statistical analysis of single-cell data, part of
 ## Features
 
 - **Differential Expression Analysis**
-    - Parametric tests (Student's t-test, Welch's t-test)
-    - Non-parametric tests (Mann-Whitney U test)
-    - Effect size calculations
-    - Parallel implementation for performance
+    - Parametric: Student's and Welch's t-test
+    - Rank-based: Mann-Whitney U (Wilcoxon rank-sum), Wilcoxon signed-rank (paired),
+      Kruskal-Wallis (two or more groups)
+    - Count-based: Fisher's exact test, negative binomial
+    - Effect sizes: Cohen's d, Hedges' g, log2 fold change
+    - Parallel throughout
+
+- **Marker Genes**
+    - Group means, detection rates (`pct.1`/`pct.2`), log2FC and AUROC in one pass
+    - Candidate pre-filtering by detection rate and fold change
+
+- **Enrichment**
+    - GSEA with permutation null and leading-edge genes
+    - ORA (hypergeometric over-representation)
+    - AUCell per-cell pathway activity
+
+- **Spatial**
+    - Moran's I and Geary's C against a spatial neighbour graph
 
 - **Multiple Testing Correction**
     - Bonferroni correction
@@ -27,7 +41,8 @@ A specialized Rust library for statistical analysis of single-cell data, part of
 
 - **Statistical Framework**
     - Generic interfaces for statistical tests
-    - Support for sparse matrix representations
+    - Container-agnostic sparse support: works on `sprs` matrices in either storage
+      order, or on raw CSR/CSC slices passed across an FFI boundary such as PyO3
     - Type-safe operations via traits
 
 ## Getting Started
@@ -36,18 +51,18 @@ Add the crate to your Cargo.toml:
 
 ```toml
 [dependencies]
-single-statistics = "0.1.0"
+single-statistics = "1.0"
 ```
 
 ## Example Usage
 
 ```rust
-use nalgebra_sparse::CsrMatrix;
-use single_statistics::testing::{Alternative, MatrixStatTests, TestMethod, TTestType};
+use sprs::CsMat;
+use single_statistics::testing::{MatrixStatTests, TestMethod, TTestType};
 
 fn main() -> anyhow::Result<()> {
-    // Create or load your expression matrix (genes x cells)
-    let expression_matrix: CsrMatrix<f64> = // ...
+    // Expression matrix, genes x cells
+    let expression_matrix: CsMat<f64> = // ...
 
     // Define groups (e.g., cell types, conditions)
     let group_ids = vec![0, 0, 0, 1, 1, 1];
@@ -80,6 +95,26 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+### Marker genes
+
+```rust
+use single_statistics::testing::markers::{marker_statistics, filter_marker_candidates};
+use single_statistics::testing::utils::SprsView;
+
+let view = SprsView::new(&expression_matrix);
+let stats = marker_statistics(view.as_matrix_ref(), &group1, &group2, 1.0)?;
+
+// Keep genes detected in >=10% of either group with |log2FC| >= 0.25
+let candidates = filter_marker_candidates(&stats, 0.10, 0.25);
+```
+
+### Matrix orientation
+
+Sparse views are *major-oriented*: the major axis is features (genes), the minor
+axis is observations (cells). A CSR `genes x cells` matrix and a CSC `cells x genes`
+matrix both work directly. Outer-sliced `sprs` views are handled too — their `indptr`
+is rebased automatically, and unsliced matrices stay zero-copy.
+
 ## Integration with the single-rust Ecosystem
 
 `single-statistics` is designed to work seamlessly with other components of the single-rust ecosystem:
@@ -93,10 +128,11 @@ fn main() -> anyhow::Result<()> {
 This crate focuses specifically on statistics related to differential expression and marker gene identification. It implements robust, efficient algorithms optimized for sparse data, providing statistical foundations for higher-level analyses in the single-cell domain.
 
 Features in scope:
-- Statistical tests relevant to single-cell RNA-seq analysis
+- Statistical tests relevant to single-cell RNA-seq and spatial transcriptomics
 - Implementations of various hypothesis testing methods
 - Multiple testing correction
-- Effect size calculations
+- Effect size and marker gene statistics
+- Gene set enrichment (GSEA, ORA, AUCell)
 
 Features out of scope (available in other crates):
 - General matrix statistics (in `single-algebra`)
@@ -104,6 +140,13 @@ Features out of scope (available in other crates):
 - Plotting/visualization
 - Clustering algorithms (in `single-clustering`)
 - Batch correction
+
+## Feature flags
+
+| Flag | Default | Enables |
+| --- | --- | --- |
+| `spatial` | yes | Moran's I, Geary's C |
+| `enrichment` | no | GSEA, ORA, AUCell |
 
 ## Contributing
 

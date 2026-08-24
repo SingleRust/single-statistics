@@ -1,6 +1,6 @@
 use single_statistics::testing::inference::parametric::{fast_t_test_from_sums, t_test_matrix_groups};
 use single_statistics::testing::{TTestType, TestResult};
-use nalgebra_sparse::{CsrMatrix, CooMatrix};
+use sprs::{CsMat, TriMat};
 
 #[cfg(test)]
 mod quick_test {
@@ -369,35 +369,35 @@ mod quick_test {
         // Gene 1: [3,3,3,3,3,3] - no difference
         // Gene 2: [0,0,1,2,3,4] - moderate difference
         
-        let mut coo = CooMatrix::new(3, 6); // 3 genes x 6 cells
-        
+        let mut tri = TriMat::new((3, 6)); // 3 genes x 6 cells
+
         // Gene 0 values - clear difference
-        coo.push(0, 0, 1.0f64); coo.push(0, 1, 1.0); coo.push(0, 2, 1.0);
-        coo.push(0, 3, 5.0); coo.push(0, 4, 5.0); coo.push(0, 5, 5.0);
-        
+        tri.add_triplet(0, 0, 1.0f64); tri.add_triplet(0, 1, 1.0); tri.add_triplet(0, 2, 1.0);
+        tri.add_triplet(0, 3, 5.0); tri.add_triplet(0, 4, 5.0); tri.add_triplet(0, 5, 5.0);
+
         // Gene 1 values - all same (should not be significant)
-        coo.push(1, 0, 3.0); coo.push(1, 1, 3.0); coo.push(1, 2, 3.0);
-        coo.push(1, 3, 3.0); coo.push(1, 4, 3.0); coo.push(1, 5, 3.0);
-        
+        tri.add_triplet(1, 0, 3.0); tri.add_triplet(1, 1, 3.0); tri.add_triplet(1, 2, 3.0);
+        tri.add_triplet(1, 3, 3.0); tri.add_triplet(1, 4, 3.0); tri.add_triplet(1, 5, 3.0);
+
         // Gene 2 values - moderate difference
-        coo.push(2, 0, 0.0); coo.push(2, 1, 0.0); coo.push(2, 2, 1.0);
-        coo.push(2, 3, 2.0); coo.push(2, 4, 3.0); coo.push(2, 5, 4.0);
-        
-        let matrix = CsrMatrix::from(&coo);
+        tri.add_triplet(2, 0, 0.0); tri.add_triplet(2, 1, 0.0); tri.add_triplet(2, 2, 1.0);
+        tri.add_triplet(2, 3, 2.0); tri.add_triplet(2, 4, 3.0); tri.add_triplet(2, 5, 4.0);
+
+        let matrix: CsMat<f64> = tri.to_csr();
         
         let group1_indices = vec![0, 1, 2]; // First 3 cells
         let group2_indices = vec![3, 4, 5]; // Last 3 cells
         
         println!("\n=== MATRIX-BASED WORKFLOW TEST ===");
-        println!("Matrix shape: {} genes x {} cells", matrix.nrows(), matrix.ncols());
+        println!("Matrix shape: {} genes x {} cells", matrix.rows(), matrix.cols());
         println!("Group 1 indices: {:?}", group1_indices);
         println!("Group 2 indices: {:?}", group2_indices);
         
         // Debug: print the actual matrix values
-        for gene in 0..matrix.nrows() {
+        for gene in 0..matrix.rows() {
             print!("Gene {}: [", gene);
-            for cell in 0..matrix.ncols() {
-                let value = matrix.get_entry(gene, cell).map_or(0.0, |entry| entry.into_value());
+            for cell in 0..matrix.cols() {
+                let value = matrix.get(gene, cell).copied().unwrap_or(0.0);
                 print!("{}, ", value);
             }
             println!("]");

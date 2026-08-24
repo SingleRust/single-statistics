@@ -28,8 +28,11 @@ use std::collections::HashMap;
 pub mod correction;
 pub mod effect;
 pub mod inference;
+pub mod markers;
 
 pub mod utils;
+
+pub use inference::MatrixStatTests;
 
 /// Statistical test methods available for differential expression analysis.
 ///
@@ -50,11 +53,25 @@ pub enum TestMethod {
     MannWhitney,
 
     /// Fisher's Exact test for comparing frequencies of expression.
-    /// 
+    ///
     /// **Use when**: Comparing proportions (e.g., cell type proportions or expression frequency).
     /// **Best for**: Categorical data and binary (expressed/not expressed) comparisons.
     FisherExact,
-    
+
+    /// Wilcoxon signed-rank test for *paired* samples.
+    ///
+    /// **Use when**: Observations pair up one-to-one (same donor before/after treatment).
+    /// **Best for**: Paired designs where Mann-Whitney's independence assumption fails.
+    /// **Note**: Requires the two groups to be the same size and ordered consistently.
+    WilcoxonSignedRank,
+
+    /// Kruskal-Wallis H test: non-parametric one-way ANOVA across two or more groups.
+    ///
+    /// **Use when**: Comparing more than two groups without assuming normality.
+    /// **Best for**: Multi-group comparisons; this is the only method here that
+    /// accepts more than two groups.
+    KruskalWallis,
+
     /// Negative binomial test for count data with overdispersion.
     /// 
     /// **Use when**: Working with raw UMI counts and modeling overdispersion.
@@ -123,8 +140,12 @@ pub struct TestResult<T> {
     pub effect_size: Option<T>,
     /// Standard error of the effect size or test statistic
     pub standard_error: Option<T>,
-    /// Additional test-specific information
-    pub metadata: HashMap<String, T>,
+    /// Additional test-specific information.
+    ///
+    /// Keyed by `&'static str` rather than `String`: these are always literals from
+    /// the test implementations, and allocating a `String` per key per gene was pure
+    /// overhead inside the per-gene parallel maps.
+    pub metadata: HashMap<&'static str, T>,
 }
 
 impl<T> TestResult<T>
@@ -176,8 +197,8 @@ where
     }
 
     /// Add additional metadata
-    pub fn with_metadata(mut self, key: &str, value: T) -> Self {
-        self.metadata.insert(key.to_string(), value);
+    pub fn with_metadata(mut self, key: &'static str, value: T) -> Self {
+        self.metadata.insert(key, value);
         self
     }
 
@@ -207,7 +228,7 @@ pub struct MultipleTestResults<T> {
     /// Confidence intervals (if calculated)
     pub confidence_intervals: Option<Vec<(T, T)>>,
     /// Feature-specific metadata
-    pub feature_metadata: Option<Vec<HashMap<String, T>>>,
+    pub feature_metadata: Option<Vec<HashMap<&'static str, T>>>,
     /// Global metadata about the test
     pub global_metadata: HashMap<String, String>,
 }
